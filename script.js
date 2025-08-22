@@ -2079,9 +2079,11 @@ class MathematicalOutlineGenerator {
     }
 
     generateLinearFormula(contour) {
-        const points = this.simplifyContour(contour, 15); // More aggressive simplification
+        // Use the actual contour points, not simplified ones
+        const points = contour;
         const segments = [];
         
+        // Create segments that follow the actual contour
         for (let i = 0; i < points.length - 1; i++) {
             const p1 = points[i];
             const p2 = points[i + 1];
@@ -2090,14 +2092,34 @@ class MathematicalOutlineGenerator {
             const dy = p2.y - p1.y;
             const length = Math.sqrt(dx * dx + dy * dy);
             
-            // Only include significant segments with higher threshold
-            if (length > 15) { // Increased minimum length
+            // Include all significant segments that are part of the actual outline
+            if (length > 5) { // Lower threshold to capture more detail
                 segments.push({
                     type: 'line',
                     x1: p1.x,
                     y1: p1.y,
                     x2: p2.x,
                     y2: p2.y,
+                    length: length
+                });
+            }
+        }
+        
+        // Connect the last point to the first to close the outline
+        if (points.length > 2) {
+            const first = points[0];
+            const last = points[points.length - 1];
+            const dx = last.x - first.x;
+            const dy = last.y - first.y;
+            const length = Math.sqrt(dx * dx + dy * dy);
+            
+            if (length > 5) {
+                segments.push({
+                    type: 'line',
+                    x1: last.x,
+                    y1: last.y,
+                    x2: first.x,
+                    y2: first.y,
                     length: length
                 });
             }
@@ -2114,20 +2136,22 @@ class MathematicalOutlineGenerator {
     }
 
     generateQuadraticFormula(contour) {
-        const points = this.simplifyContour(contour, 20); // More aggressive simplification
+        // Use the actual contour points for better representation
+        const points = contour;
         const curves = [];
         
-        for (let i = 0; i < points.length - 2; i += 3) { // Skip more points
+        // Create curves that follow the actual contour shape
+        for (let i = 0; i < points.length - 2; i++) {
             const p1 = points[i];
             const p2 = points[i + 1];
             const p3 = points[i + 2];
             
-            // Check if this is a significant curve
+            // Calculate the actual curve that passes through these three points
             const length1 = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
             const length2 = Math.sqrt((p3.x - p2.x) ** 2 + (p3.y - p2.y) ** 2);
             
-            // Only include significant curves
-            if (length1 > 12 && length2 > 12) {
+            // Only include curves that represent significant shape changes
+            if (length1 > 8 && length2 > 8) {
                 curves.push({
                     type: 'quadratic',
                     x1: p1.x, y1: p1.y,
@@ -2148,20 +2172,22 @@ class MathematicalOutlineGenerator {
     }
 
     generateSplineFormula(contour) {
-        const points = this.simplifyContour(contour, 25); // More aggressive simplification
+        // Use the actual contour points for accurate representation
+        const points = contour;
         const splines = [];
         
-        for (let i = 0; i < points.length - 3; i += 4) { // Skip more points
+        // Create splines that follow the actual contour shape
+        for (let i = 0; i < points.length - 3; i++) {
             const p1 = points[i];
             const p2 = points[i + 1];
             const p3 = points[i + 2];
             const p4 = points[i + 3];
             
-            // Check if this is a significant spline
+            // Calculate the actual spline that passes through these four points
             const totalLength = this.calculateSegmentLength([p1, p2, p3, p4]);
             
-            // Only include significant splines
-            if (totalLength > 20) {
+            // Only include splines that represent significant shape changes
+            if (totalLength > 12) {
                 splines.push({
                     type: 'cubic',
                     x1: p1.x, y1: p1.y,
@@ -2389,22 +2415,33 @@ class MathematicalOutlineGenerator {
     }
     
     drawLinearFormulas(ctx, outline) {
+        // Draw all segments to represent the complete outline
         for (const segment of outline.segments) {
-            const m = (segment.y2 - segment.y1) / (segment.x2 - segment.x1);
-            const c = segment.y1 - m * segment.x1;
-            
-            const xMin = Math.min(segment.x1, segment.x2);
-            const xMax = Math.max(segment.x1, segment.x2);
-            
-            // Draw the line segment using the formula y = mx + c
-            ctx.beginPath();
-            ctx.moveTo(xMin, m * xMin + c);
-            ctx.lineTo(xMax, m * xMax + c);
-            ctx.stroke();
+            // Handle vertical lines
+            if (Math.abs(segment.x2 - segment.x1) < 0.1) {
+                ctx.beginPath();
+                ctx.moveTo(segment.x1, segment.y1);
+                ctx.lineTo(segment.x2, segment.y2);
+                ctx.stroke();
+            } else {
+                // Regular line equation y = mx + c
+                const m = (segment.y2 - segment.y1) / (segment.x2 - segment.x1);
+                const c = segment.y1 - m * segment.x1;
+                
+                const xMin = Math.min(segment.x1, segment.x2);
+                const xMax = Math.max(segment.x1, segment.x2);
+                
+                // Draw the line segment using the formula y = mx + c
+                ctx.beginPath();
+                ctx.moveTo(xMin, m * xMin + c);
+                ctx.lineTo(xMax, m * xMax + c);
+                ctx.stroke();
+            }
         }
     }
     
     drawQuadraticFormulas(ctx, outline) {
+        // Draw all curves to represent the complete outline
         for (const curve of outline.curves) {
             const x1 = curve.x1, y1 = curve.y1;
             const x2 = curve.x2, y2 = curve.y2;
@@ -2429,11 +2466,18 @@ class MathematicalOutlineGenerator {
                     ctx.lineTo(x, y);
                 }
                 ctx.stroke();
+            } else {
+                // Fallback to linear if quadratic fails
+                ctx.beginPath();
+                ctx.moveTo(x1, y1);
+                ctx.lineTo(x3, y3);
+                ctx.stroke();
             }
         }
     }
     
     drawSplineFormulas(ctx, outline) {
+        // Draw all splines to represent the complete outline
         for (const spline of outline.splines) {
             const x1 = spline.x1, y1 = spline.y1;
             const x2 = spline.x2, y2 = spline.y2;
@@ -2457,21 +2501,27 @@ class MathematicalOutlineGenerator {
         let formulas = '';
         const segments = outline.segments;
         
-        // Only include the most significant segments
-        const significantSegments = segments
-            .sort((a, b) => b.length - a.length)
-            .slice(0, 3); // Only top 3 segments
-        
-        for (let i = 0; i < significantSegments.length; i++) {
-            const segment = significantSegments[i];
-            const m = (segment.y2 - segment.y1) / (segment.x2 - segment.x1);
-            const c = segment.y1 - m * segment.x1;
+        // Include all segments to represent the complete outline
+        for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i];
             
-            // Convert to Desmos format with range
-            const xMin = Math.min(segment.x1, segment.x2);
-            const xMax = Math.max(segment.x1, segment.x2);
-            
-            formulas += `y = ${m.toFixed(3)}x + ${c.toFixed(3)} \\{${xMin.toFixed(1)} < x < ${xMax.toFixed(1)}\\}\n`;
+            // Handle vertical lines (infinite slope)
+            if (Math.abs(segment.x2 - segment.x1) < 0.1) {
+                const x = segment.x1;
+                const yMin = Math.min(segment.y1, segment.y2);
+                const yMax = Math.max(segment.y1, segment.y2);
+                formulas += `x = ${x.toFixed(1)} \\{${yMin.toFixed(1)} < y < ${yMax.toFixed(1)}\\}\n`;
+            } else {
+                // Regular line equation y = mx + c
+                const m = (segment.y2 - segment.y1) / (segment.x2 - segment.x1);
+                const c = segment.y1 - m * segment.x1;
+                
+                // Convert to Desmos format with range
+                const xMin = Math.min(segment.x1, segment.x2);
+                const xMax = Math.max(segment.x1, segment.x2);
+                
+                formulas += `y = ${m.toFixed(3)}x + ${c.toFixed(3)} \\{${xMin.toFixed(1)} < x < ${xMax.toFixed(1)}\\}\n`;
+            }
         }
         
         return formulas;
@@ -2481,11 +2531,9 @@ class MathematicalOutlineGenerator {
         let formulas = '';
         const curves = outline.curves;
         
-        // Only include the most significant curves
-        const significantCurves = curves.slice(0, 2); // Only top 2 curves
-        
-        for (let i = 0; i < significantCurves.length; i++) {
-            const curve = significantCurves[i];
+        // Include all curves to represent the complete outline
+        for (let i = 0; i < curves.length; i++) {
+            const curve = curves[i];
             
             // Convert quadratic Bezier to standard quadratic form: y = ax² + bx + c
             // Using the three points to solve for a, b, c
@@ -2508,6 +2556,13 @@ class MathematicalOutlineGenerator {
                 const xMax = Math.max(x1, x2, x3);
                 
                 formulas += `y = ${a.toFixed(3)}x^2 + ${b.toFixed(3)}x + ${c.toFixed(3)} \\{${xMin.toFixed(1)} < x < ${xMax.toFixed(1)}\\}\n`;
+            } else {
+                // Fallback to linear if quadratic fails
+                const m = (y3 - y1) / (x3 - x1);
+                const c = y1 - m * x1;
+                const xMin = Math.min(x1, x3);
+                const xMax = Math.max(x1, x3);
+                formulas += `y = ${m.toFixed(3)}x + ${c.toFixed(3)} \\{${xMin.toFixed(1)} < x < ${xMax.toFixed(1)}\\}\n`;
             }
         }
         
@@ -2518,11 +2573,9 @@ class MathematicalOutlineGenerator {
         let formulas = '';
         const splines = outline.splines;
         
-        // Only include the most significant splines
-        const significantSplines = splines.slice(0, 2); // Only top 2 splines
-        
-        for (let i = 0; i < significantSplines.length; i++) {
-            const spline = significantSplines[i];
+        // Include all splines to represent the complete outline
+        for (let i = 0; i < splines.length; i++) {
+            const spline = splines[i];
             
             // For cubic splines, we'll use parametric equations
             // x(t) = (1-t)^3 * x1 + 3(1-t)^2 * t * x2 + 3(1-t) * t^2 * x3 + t^3 * x4
