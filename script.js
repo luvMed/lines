@@ -161,7 +161,7 @@ class MathematicalOutlineGenerator {
             
             // Convert to grayscale and apply edge detection
             const grayscale = this.convertToGrayscale(data, canvas.width, canvas.height);
-            const edges = this.applyCannyEdgeDetection(grayscale, canvas.width, canvas.height);
+            const edges = this.applyCannyEdgeDetection(imageData);
             
             // Detect skin tones using the same cached image data
             const skinMask = this.detectSkinTones(data, canvas.width, canvas.height);
@@ -687,52 +687,63 @@ class MathematicalOutlineGenerator {
         return rule1 || rule2 || rule3;
     }
 
-    applyCannyEdgeDetection(grayscale, width, height) {
-        const threshold = parseInt(this.edgeThreshold.value);
-        const smoothing = parseInt(this.smoothingFactor.value);
+    applyCannyEdgeDetection(imageData) {
+        const width = imageData.width;
+        const height = imageData.height;
+        const data = imageData.data;
         
-        // Apply Gaussian blur
-        const blurred = this.applyGaussianBlur(grayscale, width, height, smoothing);
+        // Convert to grayscale and enhance for fine details like hair
+        const grayscale = new Uint8Array(width * height);
+        for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            grayscale[i / 4] = 0.299 * r + 0.587 * g + 0.114 * b;
+        }
         
-        // Apply multiple edge detection operators for better accuracy
+        // Apply Gaussian blur with smaller kernel for fine detail preservation
+        const blurred = this.applyGaussianBlur(grayscale, width, height, 1.0);
+        
+        // Apply multiple edge detection operators for comprehensive detection
         const sobelX = this.applySobelX(blurred, width, height);
         const sobelY = this.applySobelY(blurred, width, height);
         const prewittX = this.applyPrewittX(blurred, width, height);
         const prewittY = this.applyPrewittY(blurred, width, height);
-        const cannyX = this.applyCannyX(blurred, width, height);
-        const cannyY = this.applyCannyY(blurred, width, height);
         const laplacian = this.applyLaplacian(blurred, width, height);
         
-        // Calculate gradient magnitude and direction using combined operators
-        const magnitude = new Uint8ClampedArray(width * height);
-        const direction = new Float32Array(width * height);
-        
-        for (let i = 0; i < width * height; i++) {
-            // Combine multiple operators for better edge detection
+        // Enhanced edge detection with higher sensitivity for fine details
+        const edges = new Uint8Array(width * height);
+        for (let i = 0; i < edges.length; i++) {
             const sobelMag = Math.sqrt(sobelX[i] * sobelX[i] + sobelY[i] * sobelY[i]);
             const prewittMag = Math.sqrt(prewittX[i] * prewittX[i] + prewittY[i] * prewittY[i]);
-            const cannyMag = Math.sqrt(cannyX[i] * cannyX[i] + cannyY[i] * cannyY[i]);
             const laplacianMag = Math.abs(laplacian[i]);
             
-            // Weighted combination with emphasis on person-specific features
-            magnitude[i] = 0.3 * sobelMag + 0.2 * prewittMag + 0.3 * cannyMag + 0.2 * laplacianMag;
-            direction[i] = Math.atan2(sobelY[i], sobelX[i]);
+            // Weighted combination with higher sensitivity for fine details
+            const combined = (0.3 * sobelMag + 0.3 * prewittMag + 0.4 * laplacianMag);
+            
+            // Lower threshold for better hair detection
+            edges[i] = combined > 15 ? 255 : 0; // Lowered from 20 to 15
         }
         
-        // Apply morphological operations to clean up edges
-        const cleaned = this.morphologicalCleanup(magnitude, width, height);
+        // Apply morphological operations to enhance fine details
+        const enhanced = this.morphologicalCleanup(edges, width, height);
         
-        // Non-maximum suppression with improved algorithm
-        const suppressed = this.improvedNonMaximumSuppression(cleaned, direction, width, height);
+        // Apply non-maximum suppression with higher sensitivity
+        const suppressed = this.improvedNonMaximumSuppression(enhanced, width, height);
         
-        // Adaptive double thresholding
-        const result = this.adaptiveDoubleThreshold(suppressed, width, height, threshold);
+        // Apply adaptive double thresholding with lower thresholds for hair
+        const thresholded = this.adaptiveDoubleThreshold(suppressed, width, height);
         
-        // Final cleanup with connected component analysis
-        const cleanedResult = this.connectedComponentCleanup(result, width, height);
+        // Apply connected component analysis with enhanced hair detection
+        const cleaned = this.connectedComponentCleanup(thresholded, width, height);
         
-        // Apply person-specific edge enhancement
-        return this.enhancePersonEdges(cleanedResult, width, height);
+        // Apply region growing to fill gaps in hair and fine features
+        const filled = this.regionGrowing(cleaned, width, height);
+        
+        // Enhance edges with texture analysis for hair detection
+        const textureEnhanced = this.enhanceEdgesWithTexture(filled, grayscale, width, height);
+        
+        return textureEnhanced;
     }
 
     applyGaussianBlur(data, width, height, sigma) {
@@ -1078,7 +1089,7 @@ class MathematicalOutlineGenerator {
         return result;
     }
 
-    adaptiveDoubleThreshold(data, width, height, baseThreshold) {
+    adaptiveDoubleThreshold(data, width, height) {
         // Calculate adaptive thresholds based on image statistics
         let sum = 0;
         let count = 0;
@@ -1091,8 +1102,8 @@ class MathematicalOutlineGenerator {
         
         const mean = count > 0 ? sum / count : 0;
         // Lower thresholds to capture more edges
-        const highThreshold = Math.max(baseThreshold * 0.5, mean * 1.0);
-        const lowThreshold = Math.max(baseThreshold * 0.1, mean * 0.3);
+        const highThreshold = Math.max(mean * 0.6, 30); // Lowered from 0.8 to 0.6
+        const lowThreshold = Math.max(mean * 0.2, 10);  // Lowered from 0.3 to 0.2
         
         const result = new Uint8ClampedArray(width * height);
         
@@ -1110,55 +1121,54 @@ class MathematicalOutlineGenerator {
     }
 
     connectedComponentCleanup(data, width, height) {
-        // Find connected components and remove small ones (noise)
-        const visited = new Set();
-        const components = [];
+        const result = new Uint8ClampedArray(data.length);
+        const visited = new Uint8ClampedArray(data.length);
         
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const idx = y * width + x;
-                if ((data[idx] === 255 || data[idx] === 128) && !visited.has(idx)) {
-                    const component = this.findConnectedComponentEnhanced(data, width, height, x, y, visited);
-                    if (component.length > 10) { // Lower threshold to keep more components
-                        components.push(component);
+        // Include both strong and weak edges for better hair detection
+        for (let i = 0; i < data.length; i++) {
+            if (data[i] >= 128 && !visited[i]) { // Include weak edges (128)
+                const component = this.findConnectedComponentEnhanced(data, visited, i, width, height);
+                
+                // Lower threshold for hair components
+                if (component.length >= 5) { // Lowered from 10 to 5
+                    for (const index of component) {
+                        result[index] = data[index];
                     }
                 }
             }
         }
         
-        // Reconstruct the image with only significant components
-        const result = new Uint8ClampedArray(width * height);
-        for (const component of components) {
-            for (const idx of component) {
-                result[idx] = 255;
-            }
-        }
-        
-        // Apply region growing to fill gaps
-        return this.regionGrowing(result, width, height);
+        return result;
     }
 
-    findConnectedComponentEnhanced(data, width, height, startX, startY, visited) {
+    findConnectedComponentEnhanced(data, visited, startIndex, width, height) {
         const component = [];
-        const stack = [{x: startX, y: startY}];
+        const stack = [startIndex];
         
         while (stack.length > 0) {
-            const {x, y} = stack.pop();
-            const idx = y * width + x;
+            const index = stack.pop();
             
-            if (x < 0 || x >= width || y < 0 || y >= height || 
-                (data[idx] !== 255 && data[idx] !== 128) || visited.has(idx)) {
-                continue;
-            }
+            if (visited[index] || data[index] < 128) continue; // Include weak edges
             
-            visited.add(idx);
-            component.push(idx);
+            visited[index] = 1;
+            component.push(index);
             
-            // Add 8-connected neighbors
+            const x = index % width;
+            const y = Math.floor(index / width);
+            
+            // 8-connectivity for better hair detection
             for (let dy = -1; dy <= 1; dy++) {
                 for (let dx = -1; dx <= 1; dx++) {
                     if (dx === 0 && dy === 0) continue;
-                    stack.push({x: x + dx, y: y + dy});
+                    
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    const neighborIndex = ny * width + nx;
+                    
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height &&
+                        !visited[neighborIndex] && data[neighborIndex] >= 128) {
+                        stack.push(neighborIndex);
+                    }
                 }
             }
         }
@@ -1615,7 +1625,223 @@ class MathematicalOutlineGenerator {
         return formulas;
     }
 
+    enhanceEdgesWithTexture(edges, grayscale, width, height) {
+        const enhanced = new Uint8Array(edges.length);
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                const index = y * width + x;
+                
+                if (edges[index] > 0) {
+                    enhanced[index] = edges[index];
+                    continue;
+                }
+                
+                // Check for texture patterns that indicate hair or fine details
+                const textureScore = this.calculateTextureScore(grayscale, x, y, width);
+                const localVariance = this.calculateLocalVariance(grayscale, x, y, width);
+                
+                // If high texture variance (indicating hair or fine details), enhance the edge
+                if (textureScore > 0.3 || localVariance > 500) {
+                    enhanced[index] = 128; // Medium strength edge
+                } else {
+                    enhanced[index] = 0;
+                }
+            }
+        }
+        
+        return enhanced;
+    }
 
+    calculateTextureScore(grayscale, x, y, width) {
+        // Calculate texture score based on local gradient patterns
+        let score = 0;
+        const radius = 2;
+        
+        for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                
+                const nx = x + dx;
+                const ny = y + dy;
+                const index = ny * width + nx;
+                
+                if (nx >= 0 && nx < width && ny >= 0 && ny < grayscale.length / width) {
+                    const diff = Math.abs(grayscale[y * width + x] - grayscale[index]);
+                    score += diff;
+                }
+            }
+        }
+        
+        return score / ((2 * radius + 1) * (2 * radius + 1) - 1);
+    }
+
+    calculateLocalVariance(grayscale, x, y, width) {
+        // Calculate local variance to detect fine texture patterns
+        const radius = 3;
+        let sum = 0;
+        let sumSq = 0;
+        let count = 0;
+        
+        for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+                const nx = x + dx;
+                const ny = y + dy;
+                const index = ny * width + nx;
+                
+                if (nx >= 0 && nx < width && ny >= 0 && ny < grayscale.length / width) {
+                    const value = grayscale[index];
+                    sum += value;
+                    sumSq += value * value;
+                    count++;
+                }
+            }
+        }
+        
+        if (count === 0) return 0;
+        
+        const mean = sum / count;
+        const variance = (sumSq / count) - (mean * mean);
+        return variance;
+    }
+
+    adaptiveDoubleThreshold(edges, width, height) {
+        const result = new Uint8Array(edges.length);
+        
+        // Calculate adaptive thresholds based on image statistics
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i < edges.length; i++) {
+            if (edges[i] > 0) {
+                sum += edges[i];
+                count++;
+            }
+        }
+        
+        const mean = count > 0 ? sum / count : 0;
+        
+        // Lower thresholds for better hair detection
+        const highThreshold = Math.max(mean * 0.6, 30); // Lowered from 0.8 to 0.6
+        const lowThreshold = Math.max(mean * 0.2, 10);  // Lowered from 0.3 to 0.2
+        
+        for (let i = 0; i < edges.length; i++) {
+            if (edges[i] >= highThreshold) {
+                result[i] = 255; // Strong edge
+            } else if (edges[i] >= lowThreshold) {
+                result[i] = 128; // Weak edge - important for hair
+            } else {
+                result[i] = 0;
+            }
+        }
+        
+        return result;
+    }
+
+    connectedComponentCleanup(edges, width, height) {
+        const result = new Uint8Array(edges.length);
+        const visited = new Uint8Array(edges.length);
+        
+        // Include both strong and weak edges for better hair detection
+        for (let i = 0; i < edges.length; i++) {
+            if (edges[i] >= 128 && !visited[i]) { // Include weak edges (128)
+                const component = this.findConnectedComponentEnhanced(edges, visited, i, width, height);
+                
+                // Lower threshold for hair components
+                if (component.length >= 5) { // Lowered from 10 to 5
+                    for (const index of component) {
+                        result[index] = edges[index];
+                    }
+                }
+            }
+        }
+        
+        return result;
+    }
+
+    findConnectedComponentEnhanced(edges, visited, startIndex, width, height) {
+        const component = [];
+        const stack = [startIndex];
+        
+        while (stack.length > 0) {
+            const index = stack.pop();
+            
+            if (visited[index] || edges[index] < 128) continue; // Include weak edges
+            
+            visited[index] = 1;
+            component.push(index);
+            
+            const x = index % width;
+            const y = Math.floor(index / width);
+            
+            // 8-connectivity for better hair detection
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    const neighborIndex = ny * width + nx;
+                    
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height &&
+                        !visited[neighborIndex] && edges[neighborIndex] >= 128) {
+                        stack.push(neighborIndex);
+                    }
+                }
+            }
+        }
+        
+        return component;
+    }
+
+    regionGrowing(edges, width, height) {
+        const result = new Uint8Array(edges.length);
+        
+        // Copy strong edges
+        for (let i = 0; i < edges.length; i++) {
+            if (edges[i] === 255) {
+                result[i] = 255;
+            }
+        }
+        
+        // Grow regions from strong edges to include hair and fine details
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                const index = y * width + x;
+                
+                if (result[index] === 255) {
+                    this.growRegionEnhanced(result, edges, x, y, width, height);
+                }
+            }
+        }
+        
+        return result;
+    }
+
+    growRegionEnhanced(result, edges, startX, startY, width, height) {
+        const queue = [{x: startX, y: startY}];
+        
+        while (queue.length > 0) {
+            const {x, y} = queue.shift();
+            const index = y * width + x;
+            
+            // Check 8-connectivity for better hair detection
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    const neighborIndex = ny * width + nx;
+                    
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height &&
+                        result[neighborIndex] === 0 && edges[neighborIndex] >= 64) { // Lower threshold for hair
+                        result[neighborIndex] = 255;
+                        queue.push({x: nx, y: ny});
+                    }
+                }
+            }
+        }
+    }
 
     async copyToClipboard() {
         try {
@@ -1639,6 +1865,174 @@ class MathematicalOutlineGenerator {
                 this.copyBtn.textContent = 'Copy Desmos Formulas';
             }, 2000);
         }
+    }
+
+    advancedPersonDetection(contours) {
+        const personContours = [];
+        
+        for (const contour of contours) {
+            const confidence = this.calculatePersonConfidence(contour);
+            
+            // Lower confidence thresholds for better hair detection
+            if (confidence > 0.3) { // Lowered from 0.5
+                personContours.push({
+                    contour: contour,
+                    confidence: confidence
+                });
+            }
+        }
+        
+        // Sort by confidence and select the best matches
+        personContours.sort((a, b) => b.confidence - a.confidence);
+        
+        // Include more contours for better hair coverage
+        const selectedContours = personContours.slice(0, 5); // Increased from 3
+        
+        // If no high-confidence contours found, include the largest contour
+        if (selectedContours.length === 0 && contours.length > 0) {
+            const largestContour = contours.reduce((largest, current) => {
+                return this.calculateArea(current) > this.calculateArea(largest) ? current : largest;
+            });
+            
+            selectedContours.push({
+                contour: largestContour,
+                confidence: 0.2
+            });
+        }
+        
+        return selectedContours.map(item => item.contour);
+    }
+
+    calculatePersonConfidence(contour) {
+        if (contour.length < 10) return 0;
+        
+        const area = this.calculateArea(contour);
+        const perimeter = this.calculatePerimeter(contour);
+        const aspectRatio = this.calculateAspectRatio(contour);
+        const complexity = this.calculateComplexity(contour);
+        const humanProportions = this.checkHumanProportions(contour);
+        const symmetry = this.checkSymmetry(contour);
+        const smoothness = this.checkSmoothness(contour);
+        const pose = this.estimatePose(contour);
+        const features = this.detectHumanFeatures(contour);
+        
+        // Enhanced weighting for fine features like hair
+        const weights = {
+            area: 0.15,           // Reduced from 0.2
+            aspectRatio: 0.1,     // Reduced from 0.15
+            complexity: 0.2,      // Increased from 0.15 - important for hair
+            humanProportions: 0.1, // Reduced from 0.15
+            symmetry: 0.1,        // Reduced from 0.15
+            smoothness: 0.1,      // Reduced from 0.15
+            pose: 0.1,            // Reduced from 0.15
+            features: 0.15        // Increased from 0.1 - important for hair
+        };
+        
+        const combinedProb = 
+            weights.area * area +
+            weights.aspectRatio * aspectRatio +
+            weights.complexity * complexity +
+            weights.humanProportions * humanProportions +
+            weights.symmetry * symmetry +
+            weights.smoothness * smoothness +
+            weights.pose * pose +
+            weights.features * features;
+        
+        return Math.min(combinedProb, 1.0);
+    }
+
+    isPersonLike(contour) {
+        if (contour.length < 10) return false; // Lowered from 15
+        
+        const area = this.calculateArea(contour);
+        const perimeter = this.calculatePerimeter(contour);
+        const aspectRatio = this.calculateAspectRatio(contour);
+        const complexity = this.calculateComplexity(contour);
+        
+        // More lenient criteria for hair detection
+        const minArea = 50;       // Lowered from 100
+        const maxArea = 50000;    // Increased from 30000
+        const minAspectRatio = 0.3; // Lowered from 0.5
+        const maxAspectRatio = 5.0; // Increased from 3.0
+        const minComplexity = 0.1;  // Lowered from 0.2
+        const maxComplexity = 2.0;  // Increased from 1.5
+        
+        return area >= minArea && area <= maxArea &&
+               aspectRatio >= minAspectRatio && aspectRatio <= maxAspectRatio &&
+               complexity >= minComplexity && complexity <= maxComplexity;
+    }
+
+    detectHumanFeatures(contour) {
+        const features = this.detectFacialFeatures(contour);
+        const bodyParts = this.detectBodyParts(contour);
+        const hairFeatures = this.detectHairFeatures(contour); // New hair detection
+        
+        // Enhanced weighting for hair features
+        return 0.3 * features + 0.4 * bodyParts + 0.3 * hairFeatures;
+    }
+
+    detectHairFeatures(contour) {
+        // Detect hair-like features in the upper portion of the contour
+        const bounds = this.getBoundingBox(contour);
+        const upperRegion = bounds.y + bounds.height * 0.3; // Upper 30% of contour
+        
+        let hairPoints = 0;
+        let totalUpperPoints = 0;
+        
+        for (const point of contour) {
+            if (point.y <= upperRegion) {
+                totalUpperPoints++;
+                
+                // Check for fine texture patterns that indicate hair
+                const textureScore = this.calculatePointTexture(point, contour);
+                if (textureScore > 0.4) { // Lower threshold for hair detection
+                    hairPoints++;
+                }
+            }
+        }
+        
+        if (totalUpperPoints === 0) return 0;
+        
+        const hairRatio = hairPoints / totalUpperPoints;
+        return Math.min(hairRatio * 2, 1.0); // Boost hair detection score
+    }
+
+    calculatePointTexture(point, contour) {
+        // Calculate texture around a point to detect hair-like patterns
+        const radius = 3;
+        let textureVariance = 0;
+        let neighborCount = 0;
+        
+        for (const neighbor of contour) {
+            const distance = Math.sqrt((point.x - neighbor.x) ** 2 + (point.y - neighbor.y) ** 2);
+            if (distance <= radius && distance > 0) {
+                textureVariance += distance;
+                neighborCount++;
+            }
+        }
+        
+        if (neighborCount === 0) return 0;
+        
+        return textureVariance / neighborCount;
+    }
+
+    getBoundingBox(contour) {
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        
+        for (const point of contour) {
+            minX = Math.min(minX, point.x);
+            maxX = Math.max(maxX, point.x);
+            minY = Math.min(minY, point.y);
+            maxY = Math.max(maxY, point.y);
+        }
+        
+        return {
+            x: minX,
+            y: minY,
+            width: maxX - minX,
+            height: maxY - minY
+        };
     }
 }
 
