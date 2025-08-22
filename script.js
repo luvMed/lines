@@ -30,6 +30,27 @@ class MathematicalOutlineGenerator {
         this.formulaComplexity = document.getElementById('formulaComplexity');
         this.thresholdValue = document.getElementById('thresholdValue');
         this.smoothingValue = document.getElementById('smoothingValue');
+        
+        // Initialize mathematical outlines array
+        this.mathematicalOutlines = [];
+        
+        // Verify all required elements exist
+        this.verifyElements();
+    }
+
+    verifyElements() {
+        const requiredElements = [
+            'uploadArea', 'imageInput', 'processingSection', 'resultsSection',
+            'originalCanvas', 'edgesCanvas', 'outlinesCanvas', 'formulaOutput',
+            'previewElement', 'blackOutlineCanvas', 'copyBtn', 'processBtn'
+        ];
+        
+        for (const elementName of requiredElements) {
+            if (!this[elementName]) {
+                console.error(`Required element not found: ${elementName}`);
+                throw new Error(`Required element not found: ${elementName}`);
+            }
+        }
     }
 
     bindEvents() {
@@ -103,6 +124,11 @@ class MathematicalOutlineGenerator {
     }
 
     displayOriginalImage() {
+        if (!this.originalCanvas) {
+            console.error('Original canvas not found');
+            return;
+        }
+        
         const canvas = this.originalCanvas;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
@@ -145,10 +171,18 @@ class MathematicalOutlineGenerator {
 
     async detectEdges() {
         try {
+            if (!this.edgesCanvas) {
+                throw new Error('Edges canvas not found');
+            }
+            
             const canvas = this.edgesCanvas;
             const ctx = canvas.getContext('2d', { willReadFrequently: true });
             
             // Set canvas size same as original
+            if (!this.originalCanvas) {
+                throw new Error('Original canvas not found');
+            }
+            
             canvas.width = this.originalCanvas.width;
             canvas.height = this.originalCanvas.height;
             
@@ -1233,32 +1267,40 @@ class MathematicalOutlineGenerator {
     }
 
     generateMathematicalOutlines() {
-        const canvas = this.mathematicalPreviewCanvas;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        // Generate mathematical outlines from detected edges
+        if (!this.edgeData) {
+            console.error('No edge data available');
+            return;
+        }
         
-        // Clear canvas
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        // Extract contours from edge data
+        const contours = this.extractContours(this.edgeData, this.originalCanvas.width, this.originalCanvas.height);
         
-        // Set outline drawing style
-        ctx.strokeStyle = '#000000';
-        ctx.lineWidth = 2;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
+        // Detect person contours
+        const personContours = this.advancedPersonDetection(contours);
         
-        // Draw each outline type
-        for (const outline of this.mathematicalOutlines) {
-            switch (outline.type) {
-                case 'linear':
-                    this.drawLinearFormulas(ctx, outline);
-                    break;
-                case 'quadratic':
-                    this.drawQuadraticFormulas(ctx, outline);
-                    break;
-                case 'spline':
-                    this.drawSplineFormulas(ctx, outline);
-                    break;
+        // Generate mathematical outlines for each person contour
+        this.mathematicalOutlines = [];
+        for (const contour of personContours) {
+            // Generate different types of mathematical representations
+            const linearOutline = this.generateLinearFormula(contour);
+            if (linearOutline) {
+                this.mathematicalOutlines.push(linearOutline);
+            }
+            
+            const quadraticOutline = this.generateQuadraticFormula(contour);
+            if (quadraticOutline) {
+                this.mathematicalOutlines.push(quadraticOutline);
+            }
+            
+            const splineOutline = this.generateSplineFormula(contour);
+            if (splineOutline) {
+                this.mathematicalOutlines.push(splineOutline);
             }
         }
+        
+        // Limit total outlines to prevent overwhelming output
+        this.mathematicalOutlines = this.mathematicalOutlines.slice(0, 5);
     }
 
     drawLinearFormulas(ctx, outline) {
@@ -1359,10 +1401,20 @@ class MathematicalOutlineGenerator {
     }
     
     createBlackOutlinePreview() {
+        if (!this.blackOutlineCanvas) {
+            console.error('Black outline canvas not found');
+            return;
+        }
+        
         const canvas = this.blackOutlineCanvas;
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
         // Set canvas size same as original
+        if (!this.originalCanvas) {
+            console.error('Original canvas not found');
+            return;
+        }
+        
         canvas.width = this.originalCanvas.width;
         canvas.height = this.originalCanvas.height;
         
@@ -1417,10 +1469,21 @@ class MathematicalOutlineGenerator {
     }
     
     createMathematicalPreview() {
+        if (!this.previewElement) {
+            console.error('Preview element not found');
+            return;
+        }
+        
         this.previewElement.innerHTML = '';
         
         // Create a canvas to draw the mathematical formulas
         const canvas = document.createElement('canvas');
+        
+        if (!this.originalCanvas) {
+            console.error('Original canvas not found');
+            return;
+        }
+        
         canvas.width = this.originalCanvas.width;
         canvas.height = this.originalCanvas.height;
         canvas.style.width = '100%';
