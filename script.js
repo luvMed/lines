@@ -163,12 +163,18 @@ class MathematicalOutlineGenerator {
             const grayscale = this.convertToGrayscale(data, canvas.width, canvas.height);
             const edges = this.applyCannyEdgeDetection(grayscale, canvas.width, canvas.height);
             
+            // Detect skin tones for person identification
+            const skinMask = this.detectSkinTones(data, canvas.width, canvas.height);
+            
+            // Combine edge detection with skin tone information
+            const enhancedEdges = this.enhanceEdgesWithSkinTones(edges, skinMask, canvas.width, canvas.height);
+            
             // Display edges
             const edgeImageData = new ImageData(canvas.width, canvas.height);
             const edgeData = edgeImageData.data;
             
-            for (let i = 0; i < edges.length; i++) {
-                const value = edges[i];
+            for (let i = 0; i < enhancedEdges.length; i++) {
+                const value = enhancedEdges[i];
                 const pixelIndex = i * 4;
                 edgeData[pixelIndex] = value;     // Red
                 edgeData[pixelIndex + 1] = value; // Green
@@ -178,11 +184,55 @@ class MathematicalOutlineGenerator {
             
             ctx.putImageData(edgeImageData, 0, 0);
             
-            this.edgeData = edges;
+            this.edgeData = enhancedEdges;
         } catch (error) {
             console.error('Error in detectEdges:', error);
             throw error;
         }
+    }
+
+    enhanceEdgesWithSkinTones(edges, skinMask, width, height) {
+        const enhanced = new Uint8ClampedArray(width * height);
+        
+        for (let i = 0; i < width * height; i++) {
+            if (edges[i] > 0) {
+                // If edge pixel is near skin tone, enhance it
+                const x = i % width;
+                const y = Math.floor(i / width);
+                
+                let skinNeighbors = 0;
+                let totalNeighbors = 0;
+                
+                // Check 5x5 neighborhood for skin tones
+                for (let dy = -2; dy <= 2; dy++) {
+                    for (let dx = -2; dx <= 2; dx++) {
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        
+                        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                            const nIdx = ny * width + nx;
+                            if (skinMask[nIdx] > 0) {
+                                skinNeighbors++;
+                            }
+                            totalNeighbors++;
+                        }
+                    }
+                }
+                
+                const skinRatio = skinNeighbors / totalNeighbors;
+                
+                // Enhance edges near skin tones
+                if (skinRatio > 0.1) {
+                    enhanced[i] = Math.min(255, edges[i] * (1 + skinRatio));
+                } else {
+                    enhanced[i] = edges[i];
+                }
+            } else {
+                enhanced[i] = 0;
+            }
+        }
+        
+        return enhanced;
     }
 
     convertToGrayscale(data, width, height) {
@@ -196,6 +246,57 @@ class MathematicalOutlineGenerator {
         return grayscale;
     }
 
+    detectSkinTones(data, width, height) {
+        const skinMask = new Uint8ClampedArray(width * height);
+        
+        for (let i = 0; i < data.length; i += 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            
+            // Skin tone detection using multiple color space rules
+            const isSkin = this.isSkinTone(r, g, b);
+            skinMask[i / 4] = isSkin ? 255 : 0;
+        }
+        
+        return skinMask;
+    }
+
+    isSkinTone(r, g, b) {
+        // RGB skin tone detection rules
+        const rule1 = r > 95 && g > 40 && b > 20 && 
+                     Math.max(r, g, b) - Math.min(r, g, b) > 15 &&
+                     Math.abs(r - g) > 15 && r > g && r > b;
+        
+        // YCrCb skin tone detection
+        const y = 0.299 * r + 0.587 * g + 0.114 * b;
+        const cr = 0.713 * (r - y) + 128;
+        const cb = 0.564 * (b - y) + 128;
+        
+        const rule2 = cr >= 133 && cr <= 173 && cb >= 77 && cb <= 127;
+        
+        // HSV skin tone detection
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const delta = max - min;
+        
+        let h = 0;
+        if (delta !== 0) {
+            if (max === r) h = ((g - b) / delta) % 6;
+            else if (max === g) h = (b - r) / delta + 2;
+            else h = (r - g) / delta + 4;
+            h *= 60;
+            if (h < 0) h += 360;
+        }
+        
+        const s = max === 0 ? 0 : delta / max;
+        const v = max;
+        
+        const rule3 = h >= 0 && h <= 50 && s >= 0.1 && s <= 0.8 && v >= 0.2;
+        
+        return rule1 || rule2 || rule3;
+    }
+
     applyCannyEdgeDetection(grayscale, width, height) {
         const threshold = parseInt(this.edgeThreshold.value);
         const smoothing = parseInt(this.smoothingFactor.value);
@@ -203,28 +304,37 @@ class MathematicalOutlineGenerator {
         // Apply Gaussian blur
         const blurred = this.applyGaussianBlur(grayscale, width, height, smoothing);
         
-        // Apply Sobel operators
+        // Apply multiple edge detection operators for better accuracy
         const sobelX = this.applySobelX(blurred, width, height);
         const sobelY = this.applySobelY(blurred, width, height);
+        const prewittX = this.applyPrewittX(blurred, width, height);
+        const prewittY = this.applyPrewittY(blurred, width, height);
         
-        // Calculate gradient magnitude and direction
+        // Calculate gradient magnitude and direction using combined operators
         const magnitude = new Uint8ClampedArray(width * height);
         const direction = new Float32Array(width * height);
         
         for (let i = 0; i < width * height; i++) {
-            const x = sobelX[i];
-            const y = sobelY[i];
-            magnitude[i] = Math.sqrt(x * x + y * y);
-            direction[i] = Math.atan2(y, x);
+            // Combine Sobel and Prewitt for better edge detection
+            const sobelMag = Math.sqrt(sobelX[i] * sobelX[i] + sobelY[i] * sobelY[i]);
+            const prewittMag = Math.sqrt(prewittX[i] * prewittX[i] + prewittY[i] * prewittY[i]);
+            
+            // Weighted combination
+            magnitude[i] = 0.6 * sobelMag + 0.4 * prewittMag;
+            direction[i] = Math.atan2(sobelY[i], sobelX[i]);
         }
         
-        // Non-maximum suppression
-        const suppressed = this.nonMaximumSuppression(magnitude, direction, width, height);
+        // Apply morphological operations to clean up edges
+        const cleaned = this.morphologicalCleanup(magnitude, width, height);
         
-        // Double thresholding
-        const result = this.doubleThreshold(suppressed, width, height, threshold);
+        // Non-maximum suppression with improved algorithm
+        const suppressed = this.improvedNonMaximumSuppression(cleaned, direction, width, height);
         
-        return result;
+        // Adaptive double thresholding
+        const result = this.adaptiveDoubleThreshold(suppressed, width, height, threshold);
+        
+        // Final cleanup with connected component analysis
+        return this.connectedComponentCleanup(result, width, height);
     }
 
     applyGaussianBlur(data, width, height, sigma) {
@@ -317,6 +427,90 @@ class MathematicalOutlineGenerator {
         return result;
     }
 
+    applyPrewittX(data, width, height) {
+        const result = new Float32Array(width * height);
+        const prewittX = [-1, 0, 1, -1, 0, 1, -1, 0, 1];
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                let sum = 0;
+                for (let ky = -1; ky <= 1; ky++) {
+                    for (let kx = -1; kx <= 1; kx++) {
+                        const idx = (ky + 1) * 3 + (kx + 1);
+                        sum += data[(y + ky) * width + (x + kx)] * prewittX[idx];
+                    }
+                }
+                result[y * width + x] = sum;
+            }
+        }
+        
+        return result;
+    }
+
+    applyPrewittY(data, width, height) {
+        const result = new Float32Array(width * height);
+        const prewittY = [-1, -1, -1, 0, 0, 0, 1, 1, 1];
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                let sum = 0;
+                for (let ky = -1; ky <= 1; ky++) {
+                    for (let kx = -1; kx <= 1; kx++) {
+                        const idx = (ky + 1) * 3 + (kx + 1);
+                        sum += data[(y + ky) * width + (x + kx)] * prewittY[idx];
+                    }
+                }
+                result[y * width + x] = sum;
+            }
+        }
+        
+        return result;
+    }
+
+    morphologicalCleanup(data, width, height) {
+        // Erosion followed by dilation to remove noise
+        const eroded = this.erode(data, width, height);
+        return this.dilate(eroded, width, height);
+    }
+
+    erode(data, width, height) {
+        const result = new Uint8ClampedArray(width * height);
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                let min = 255;
+                for (let ky = -1; ky <= 1; ky++) {
+                    for (let kx = -1; kx <= 1; kx++) {
+                        const value = data[(y + ky) * width + (x + kx)];
+                        if (value < min) min = value;
+                    }
+                }
+                result[y * width + x] = min;
+            }
+        }
+        
+        return result;
+    }
+
+    dilate(data, width, height) {
+        const result = new Uint8ClampedArray(width * height);
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                let max = 0;
+                for (let ky = -1; ky <= 1; ky++) {
+                    for (let kx = -1; kx <= 1; kx++) {
+                        const value = data[(y + ky) * width + (x + kx)];
+                        if (value > max) max = value;
+                    }
+                }
+                result[y * width + x] = max;
+            }
+        }
+        
+        return result;
+    }
+
     nonMaximumSuppression(magnitude, direction, width, height) {
         const result = new Uint8ClampedArray(width * height);
         
@@ -353,6 +547,56 @@ class MathematicalOutlineGenerator {
         return result;
     }
 
+    improvedNonMaximumSuppression(magnitude, direction, width, height) {
+        const result = new Uint8ClampedArray(width * height);
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                const idx = y * width + x;
+                const angle = direction[idx];
+                const mag = magnitude[idx];
+                
+                // More precise angle quantization
+                let angleDeg = (angle * 180 / Math.PI + 360) % 360;
+                if (angleDeg < 0) angleDeg += 360;
+                
+                let r1, r2;
+                let weight1, weight2;
+                
+                // Interpolate between neighboring pixels for more accurate suppression
+                if ((angleDeg >= 0 && angleDeg < 22.5) || (angleDeg >= 157.5 && angleDeg < 202.5) || (angleDeg >= 337.5 && angleDeg <= 360)) {
+                    r1 = magnitude[idx + 1];
+                    r2 = magnitude[idx - 1];
+                    weight1 = 1.0;
+                    weight2 = 1.0;
+                } else if ((angleDeg >= 22.5 && angleDeg < 67.5) || (angleDeg >= 202.5 && angleDeg < 247.5)) {
+                    r1 = magnitude[(y - 1) * width + (x + 1)];
+                    r2 = magnitude[(y + 1) * width + (x - 1)];
+                    weight1 = 0.707;
+                    weight2 = 0.707;
+                } else if ((angleDeg >= 67.5 && angleDeg < 112.5) || (angleDeg >= 247.5 && angleDeg < 292.5)) {
+                    r1 = magnitude[(y - 1) * width + x];
+                    r2 = magnitude[(y + 1) * width + x];
+                    weight1 = 1.0;
+                    weight2 = 1.0;
+                } else {
+                    r1 = magnitude[(y - 1) * width + (x - 1)];
+                    r2 = magnitude[(y + 1) * width + (x + 1)];
+                    weight1 = 0.707;
+                    weight2 = 0.707;
+                }
+                
+                // Apply weighted comparison
+                const threshold1 = r1 * weight1;
+                const threshold2 = r2 * weight2;
+                
+                result[idx] = (mag >= threshold1 && mag >= threshold2) ? mag : 0;
+            }
+        }
+        
+        return result;
+    }
+
     doubleThreshold(data, width, height, threshold) {
         const highThreshold = threshold;
         const lowThreshold = threshold * 0.5;
@@ -369,6 +613,92 @@ class MathematicalOutlineGenerator {
         }
         
         return result;
+    }
+
+    adaptiveDoubleThreshold(data, width, height, baseThreshold) {
+        // Calculate adaptive thresholds based on image statistics
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i < width * height; i++) {
+            if (data[i] > 0) {
+                sum += data[i];
+                count++;
+            }
+        }
+        
+        const mean = count > 0 ? sum / count : 0;
+        const highThreshold = Math.max(baseThreshold, mean * 1.5);
+        const lowThreshold = Math.max(baseThreshold * 0.3, mean * 0.5);
+        
+        const result = new Uint8ClampedArray(width * height);
+        
+        for (let i = 0; i < width * height; i++) {
+            if (data[i] >= highThreshold) {
+                result[i] = 255;
+            } else if (data[i] >= lowThreshold) {
+                result[i] = 128;
+            } else {
+                result[i] = 0;
+            }
+        }
+        
+        return result;
+    }
+
+    connectedComponentCleanup(data, width, height) {
+        // Find connected components and remove small ones (noise)
+        const visited = new Set();
+        const components = [];
+        
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const idx = y * width + x;
+                if (data[idx] === 255 && !visited.has(idx)) {
+                    const component = this.findConnectedComponent(data, width, height, x, y, visited);
+                    if (component.length > 20) { // Only keep significant components
+                        components.push(component);
+                    }
+                }
+            }
+        }
+        
+        // Reconstruct the image with only significant components
+        const result = new Uint8ClampedArray(width * height);
+        for (const component of components) {
+            for (const idx of component) {
+                result[idx] = 255;
+            }
+        }
+        
+        return result;
+    }
+
+    findConnectedComponent(data, width, height, startX, startY, visited) {
+        const component = [];
+        const stack = [{x: startX, y: startY}];
+        
+        while (stack.length > 0) {
+            const {x, y} = stack.pop();
+            const idx = y * width + x;
+            
+            if (x < 0 || x >= width || y < 0 || y >= height || 
+                data[idx] !== 255 || visited.has(idx)) {
+                continue;
+            }
+            
+            visited.add(idx);
+            component.push(idx);
+            
+            // Add 8-connected neighbors
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    stack.push({x: x + dx, y: y + dy});
+                }
+            }
+        }
+        
+        return component;
     }
 
     generateMathematicalOutlines() {
@@ -408,7 +738,53 @@ class MathematicalOutlineGenerator {
             }
         }
         
-        return contours;
+        // Filter contours to focus on person-like shapes
+        return this.filterPersonContours(contours, width, height);
+    }
+
+    filterPersonContours(contours, width, height) {
+        const personContours = [];
+        
+        for (const contour of contours) {
+            if (this.isPersonLike(contour, width, height)) {
+                personContours.push(contour);
+            }
+        }
+        
+        return personContours;
+    }
+
+    isPersonLike(contour, width, height) {
+        if (contour.length < 20) return false;
+        
+        // Calculate bounding box
+        let minX = width, maxX = 0, minY = height, maxY = 0;
+        for (const point of contour) {
+            minX = Math.min(minX, point.x);
+            maxX = Math.max(maxX, point.x);
+            minY = Math.min(minY, point.y);
+            maxY = Math.max(maxY, point.y);
+        }
+        
+        const bboxWidth = maxX - minX;
+        const bboxHeight = maxY - minY;
+        const aspectRatio = bboxHeight / bboxWidth;
+        
+        // Person-like characteristics:
+        // 1. Height should be greater than width (aspect ratio > 1.2)
+        // 2. Should be reasonably sized (not too small or too large)
+        // 3. Should have some complexity (not just a simple shape)
+        
+        const minSize = Math.min(width, height) * 0.1; // At least 10% of image
+        const maxSize = Math.min(width, height) * 0.8; // At most 80% of image
+        
+        const size = Math.max(bboxWidth, bboxHeight);
+        const complexity = contour.length / (bboxWidth + bboxHeight);
+        
+        return aspectRatio > 1.2 && 
+               size >= minSize && 
+               size <= maxSize && 
+               complexity > 0.5;
     }
 
     traceContour(edgeData, width, height, startX, startY, visited) {
@@ -649,11 +1025,11 @@ class MathematicalOutlineGenerator {
             pane.classList.remove('active');
         });
         
-        if (targetTab === 'animated') {
-            document.getElementById('previewElement').classList.add('active');
-        } else if (targetTab === 'black-outline') {
-            document.getElementById('blackOutlinePreview').classList.add('active');
-        }
+                 if (targetTab === 'formulas') {
+             document.getElementById('previewElement').classList.add('active');
+         } else if (targetTab === 'black-outline') {
+             document.getElementById('blackOutlinePreview').classList.add('active');
+         }
     }
     
     createBlackOutlinePreview() {
@@ -689,131 +1065,238 @@ class MathematicalOutlineGenerator {
     }
 
     generateCSS() {
-        let css = '/* Mathematical Outline CSS */\n';
-        css += '.math-outline {\n';
-        css += '  position: relative;\n';
-        css += '  width: 100%;\n';
-        css += '  height: 100%;\n';
-        css += '}\n\n';
+        let formulas = '/* Mathematical Formulas for Desmos */\n';
+        formulas += '/* Copy and paste these into Desmos Graphing Calculator */\n\n';
         
         for (let i = 0; i < this.outlines.length; i++) {
             const outline = this.outlines[i];
-            css += `.outline-${i} {\n`;
-            css += '  position: absolute;\n';
-            css += '  pointer-events: none;\n';
-            css += '}\n\n';
+            formulas += `/* Outline ${i + 1} */\n`;
             
-            css += `.outline-${i} path {\n`;
-            css += '  fill: none;\n';
-            css += '  stroke: #667eea;\n';
-            css += '  stroke-width: 2;\n';
-            css += '  stroke-linecap: round;\n';
-            css += '  stroke-linejoin: round;\n';
-            css += '}\n\n';
-            
-            css += `.outline-${i} svg {\n`;
-            css += '  width: 100%;\n';
-            css += '  height: 100%;\n';
-            css += '}\n\n';
-        }
-        
-        this.formulaOutput.textContent = css;
-        this.createPreview();
-    }
-
-    createPreview() {
-        this.previewElement.innerHTML = '';
-        
-        for (let i = 0; i < this.outlines.length; i++) {
-            const outline = this.outlines[i];
-            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-            svg.setAttribute('width', '100%');
-            svg.setAttribute('height', '100%');
-            svg.classList.add(`outline-${i}`);
-            
-            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            
-            let pathData = '';
             switch (outline.type) {
                 case 'linear':
-                    pathData = this.generateLinearPathData(outline);
+                    formulas += this.generateLinearFormulas(outline, i);
                     break;
                 case 'quadratic':
-                    pathData = this.generateQuadraticPathData(outline);
+                    formulas += this.generateQuadraticFormulas(outline, i);
                     break;
                 case 'spline':
-                    pathData = this.generateSplinePathData(outline);
+                    formulas += this.generateSplineFormulas(outline, i);
                     break;
             }
-            
-            path.setAttribute('d', pathData);
-            path.setAttribute('fill', 'none');
-            path.setAttribute('stroke', '#667eea');
-            path.setAttribute('stroke-width', '2');
-            path.setAttribute('stroke-linecap', 'round');
-            path.setAttribute('stroke-linejoin', 'round');
-            path.classList.add('animated');
-            
-            svg.appendChild(path);
-            this.previewElement.appendChild(svg);
+            formulas += '\n';
         }
+        
+        this.formulaOutput.textContent = formulas;
+        this.createMathematicalPreview();
     }
-
-    generateLinearPathData(outline) {
-        let pathData = '';
+    
+    createMathematicalPreview() {
+        this.previewElement.innerHTML = '';
+        
+        // Create a canvas to draw the mathematical formulas
+        const canvas = document.createElement('canvas');
+        canvas.width = this.originalCanvas.width;
+        canvas.height = this.originalCanvas.height;
+        canvas.style.width = '100%';
+        canvas.style.height = '100%';
+        canvas.style.border = '1px solid #e5e7eb';
+        canvas.style.borderRadius = '4px';
+        
+        const ctx = canvas.getContext('2d');
+        
+        // Clear canvas with white background
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw all mathematical formulas
+        ctx.strokeStyle = '#667eea';
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        
+        for (const outline of this.outlines) {
+            switch (outline.type) {
+                case 'linear':
+                    this.drawLinearFormulas(ctx, outline);
+                    break;
+                case 'quadratic':
+                    this.drawQuadraticFormulas(ctx, outline);
+                    break;
+                case 'spline':
+                    this.drawSplineFormulas(ctx, outline);
+                    break;
+            }
+        }
+        
+        this.previewElement.appendChild(canvas);
+    }
+    
+    drawLinearFormulas(ctx, outline) {
         for (const segment of outline.segments) {
-            if (pathData === '') {
-                pathData += `M ${segment.x1} ${segment.y1}`;
-            }
-            pathData += ` L ${segment.x2} ${segment.y2}`;
+            const m = (segment.y2 - segment.y1) / (segment.x2 - segment.x1);
+            const c = segment.y1 - m * segment.x1;
+            
+            const xMin = Math.min(segment.x1, segment.x2);
+            const xMax = Math.max(segment.x1, segment.x2);
+            
+            // Draw the line segment using the formula y = mx + c
+            ctx.beginPath();
+            ctx.moveTo(xMin, m * xMin + c);
+            ctx.lineTo(xMax, m * xMax + c);
+            ctx.stroke();
         }
-        return pathData;
     }
-
-    generateQuadraticPathData(outline) {
-        let pathData = '';
+    
+    drawQuadraticFormulas(ctx, outline) {
         for (const curve of outline.curves) {
-            if (pathData === '') {
-                pathData += `M ${curve.x1} ${curve.y1}`;
+            const x1 = curve.x1, y1 = curve.y1;
+            const x2 = curve.x2, y2 = curve.y2;
+            const x3 = curve.x3, y3 = curve.y3;
+            
+            // Solve for quadratic coefficients
+            const det = (x1 - x2) * (x2 - x3) * (x3 - x1);
+            if (Math.abs(det) > 0.001) {
+                const a = ((y1 - y2) * (x2 - x3) - (y2 - y3) * (x1 - x2)) / det;
+                const b = ((y1 - y2) * (x2 * x2 - x3 * x3) - (y2 - y3) * (x1 * x1 - x2 * x2)) / det;
+                const c = y1 - a * x1 * x1 - b * x1;
+                
+                const xMin = Math.min(x1, x2, x3);
+                const xMax = Math.max(x1, x2, x3);
+                
+                // Draw the quadratic curve using the formula y = ax² + bx + c
+                ctx.beginPath();
+                ctx.moveTo(xMin, a * xMin * xMin + b * xMin + c);
+                
+                for (let x = xMin; x <= xMax; x += 0.5) {
+                    const y = a * x * x + b * x + c;
+                    ctx.lineTo(x, y);
+                }
+                ctx.stroke();
             }
-            pathData += ` Q ${curve.x2} ${curve.y2} ${curve.x3} ${curve.y3}`;
         }
-        return pathData;
+    }
+    
+    drawSplineFormulas(ctx, outline) {
+        for (const spline of outline.splines) {
+            const x1 = spline.x1, y1 = spline.y1;
+            const x2 = spline.x2, y2 = spline.y2;
+            const x3 = spline.x3, y3 = spline.y3;
+            const x4 = spline.x4, y4 = spline.y4;
+            
+            // Draw the cubic Bezier curve using parametric equations
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            
+            for (let t = 0; t <= 1; t += 0.01) {
+                const x = Math.pow(1-t, 3) * x1 + 3 * Math.pow(1-t, 2) * t * x2 + 3 * (1-t) * t * t * x3 + t * t * t * x4;
+                const y = Math.pow(1-t, 3) * y1 + 3 * Math.pow(1-t, 2) * t * y2 + 3 * (1-t) * t * t * y3 + t * t * t * y4;
+                ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+    }
+    
+    generateLinearFormulas(outline, index) {
+        let formulas = '';
+        const segments = outline.segments;
+        
+        for (let i = 0; i < segments.length; i++) {
+            const segment = segments[i];
+            const m = (segment.y2 - segment.y1) / (segment.x2 - segment.x1);
+            const c = segment.y1 - m * segment.x1;
+            
+            // Convert to Desmos format with range
+            const xMin = Math.min(segment.x1, segment.x2);
+            const xMax = Math.max(segment.x1, segment.y2);
+            
+            formulas += `y = ${m.toFixed(3)}x + ${c.toFixed(3)} \\{${xMin.toFixed(1)} < x < ${xMax.toFixed(1)}\\}\n`;
+        }
+        
+        return formulas;
+    }
+    
+    generateQuadraticFormulas(outline, index) {
+        let formulas = '';
+        const curves = outline.curves;
+        
+        for (let i = 0; i < curves.length; i++) {
+            const curve = curves[i];
+            
+            // Convert quadratic Bezier to standard quadratic form: y = ax² + bx + c
+            // Using the three points to solve for a, b, c
+            const x1 = curve.x1, y1 = curve.y1;
+            const x2 = curve.x2, y2 = curve.y2;
+            const x3 = curve.x3, y3 = curve.y3;
+            
+            // Solve system of equations:
+            // y1 = ax1² + bx1 + c
+            // y2 = ax2² + bx2 + c  
+            // y3 = ax3² + bx3 + c
+            
+            const det = (x1 - x2) * (x2 - x3) * (x3 - x1);
+            if (Math.abs(det) > 0.001) { // Avoid division by zero
+                const a = ((y1 - y2) * (x2 - x3) - (y2 - y3) * (x1 - x2)) / det;
+                const b = ((y1 - y2) * (x2² - x3²) - (y2 - y3) * (x1² - x2²)) / det;
+                const c = y1 - a * x1² - b * x1;
+                
+                const xMin = Math.min(x1, x2, x3);
+                const xMax = Math.max(x1, x2, x3);
+                
+                formulas += `y = ${a.toFixed(3)}x^2 + ${b.toFixed(3)}x + ${c.toFixed(3)} \\{${xMin.toFixed(1)} < x < ${xMax.toFixed(1)}\\}\n`;
+            }
+        }
+        
+        return formulas;
+    }
+    
+    generateSplineFormulas(outline, index) {
+        let formulas = '';
+        const splines = outline.splines;
+        
+        for (let i = 0; i < splines.length; i++) {
+            const spline = splines[i];
+            
+            // For cubic splines, we'll use parametric equations
+            // x(t) = (1-t)³x1 + 3(1-t)²tx2 + 3(1-t)t²x3 + t³x4
+            // y(t) = (1-t)³y1 + 3(1-t)²ty2 + 3(1-t)t²y3 + t³y4
+            
+            const x1 = spline.x1, y1 = spline.y1;
+            const x2 = spline.x2, y2 = spline.y2;
+            const x3 = spline.x3, y3 = spline.y3;
+            const x4 = spline.x4, y4 = spline.y4;
+            
+            // Parametric equations for Desmos
+            formulas += `x(t) = (1-t)^3 * ${x1.toFixed(1)} + 3(1-t)^2 * t * ${x2.toFixed(1)} + 3(1-t) * t^2 * ${x3.toFixed(1)} + t^3 * ${x4.toFixed(1)}\n`;
+            formulas += `y(t) = (1-t)^3 * ${y1.toFixed(1)} + 3(1-t)^2 * t * ${y2.toFixed(1)} + 3(1-t) * t^2 * ${y3.toFixed(1)} + t^3 * ${y4.toFixed(1)} \\{0 < t < 1\\}\n`;
+        }
+        
+        return formulas;
     }
 
-    generateSplinePathData(outline) {
-        let pathData = '';
-        for (const spline of outline.splines) {
-            if (pathData === '') {
-                pathData += `M ${spline.x1} ${spline.y1}`;
-            }
-            pathData += ` C ${spline.x2} ${spline.y2} ${spline.x3} ${spline.y3} ${spline.x4} ${spline.y4}`;
-        }
-        return pathData;
-    }
+
 
     async copyToClipboard() {
         try {
             await navigator.clipboard.writeText(this.formulaOutput.textContent);
-            this.copyBtn.textContent = 'Copied!';
-            setTimeout(() => {
-                this.copyBtn.textContent = 'Copy CSS';
-            }, 2000);
-        } catch (err) {
-            console.error('Failed to copy: ', err);
-            // Fallback for older browsers
-            const textArea = document.createElement('textarea');
-            textArea.value = this.formulaOutput.textContent;
-            document.body.appendChild(textArea);
-            textArea.select();
-            document.execCommand('copy');
-            document.body.removeChild(textArea);
-            
-            this.copyBtn.textContent = 'Copied!';
-            setTimeout(() => {
-                this.copyBtn.textContent = 'Copy CSS';
-            }, 2000);
-        }
+                         this.copyBtn.textContent = 'Copied!';
+             setTimeout(() => {
+                 this.copyBtn.textContent = 'Copy Desmos Formulas';
+             }, 2000);
+                 } catch (err) {
+             console.error('Failed to copy: ', err);
+             // Fallback for older browsers
+             const textArea = document.createElement('textarea');
+             textArea.value = this.formulaOutput.textContent;
+             document.body.appendChild(textArea);
+             textArea.select();
+             document.execCommand('copy');
+             document.body.removeChild(textArea);
+             
+             this.copyBtn.textContent = 'Copied!';
+             setTimeout(() => {
+                 this.copyBtn.textContent = 'Copy Desmos Formulas';
+             }, 2000);
+         }
     }
 }
 
