@@ -1,0 +1,29 @@
+{
+  "name": "mathematical-outline-generator",
+  "version": "1.0.0",
+  "description": "A web application that converts people in images into mathematical outline formulas",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx http-server -p $PORT -c-1 .",
+    "build": "echo 'Static site - no build required'",
+    "dev": "npx http-server -p 3000 -c-1 ."
+  },
+  "keywords": [
+    "mathematical",
+    "outline",
+    "generator",
+    "image-processing",
+    "edge-detection",
+    "bezier-curves",
+    "svg",
+    "css"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}

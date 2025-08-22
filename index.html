@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mathematical Outline Generator</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Mathematical Outline Generator</h1>
+            <p>Convert people in images to mathematical formulas</p>
+        </header>
+
+        <main>
+            <div class="upload-section">
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-content">
+                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="7,10 12,15 17,10"></polyline>
+                            <line x1="12" y1="15" x2="12" y2="3"></line>
+                        </svg>
+                        <h3>Upload Image</h3>
+                        <p>Drag and drop an image or click to browse</p>
+                        <input type="file" id="imageInput" accept="image/*" hidden>
+                    </div>
+                </div>
+            </div>
+
+            <div class="processing-section" id="processingSection" style="display: none;">
+                <div class="controls">
+                    <div class="control-group">
+                        <label for="edgeThreshold">Edge Sensitivity:</label>
+                        <input type="range" id="edgeThreshold" min="10" max="200" value="50">
+                        <span id="thresholdValue">50</span>
+                    </div>
+                    <div class="control-group">
+                        <label for="smoothingFactor">Smoothing:</label>
+                        <input type="range" id="smoothingFactor" min="1" max="20" value="5">
+                        <span id="smoothingValue">5</span>
+                    </div>
+                    <div class="control-group">
+                        <label for="formulaComplexity">Formula Complexity:</label>
+                        <select id="formulaComplexity">
+                            <option value="simple">Simple (Lines)</option>
+                            <option value="medium">Medium (Curves)</option>
+                            <option value="complex">Complex (Splines)</option>
+                        </select>
+                    </div>
+                    <button id="processBtn" class="btn btn-primary">Generate Mathematical Outlines</button>
+                </div>
+            </div>
+
+            <div class="results-section" id="resultsSection" style="display: none;">
+                <div class="results-grid">
+                    <div class="result-card">
+                        <h3>Original Image</h3>
+                        <div class="image-container">
+                            <canvas id="originalCanvas"></canvas>
+                        </div>
+                    </div>
+                    <div class="result-card">
+                        <h3>Edge Detection</h3>
+                        <div class="image-container">
+                            <canvas id="edgesCanvas"></canvas>
+                        </div>
+                    </div>
+                    <div class="result-card">
+                        <h3>Mathematical Outlines</h3>
+                        <div class="image-container">
+                            <canvas id="outlinesCanvas"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="formula-section">
+                    <h3>Generated Mathematical Formulas</h3>
+                    <div class="formula-container">
+                        <pre id="formulaOutput"></pre>
+                        <button id="copyBtn" class="btn btn-secondary">Copy CSS</button>
+                    </div>
+                </div>
+
+                <div class="preview-section">
+                    <h3>Preview</h3>
+                    <div class="preview-container">
+                        <div id="previewElement"></div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
