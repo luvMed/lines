@@ -235,6 +235,147 @@ class MathematicalOutlineGenerator {
         return enhanced;
     }
 
+    enhancePersonEdges(edges, width, height) {
+        const enhanced = new Uint8ClampedArray(width * height);
+        
+        // Create a person probability map
+        const personMap = this.createPersonProbabilityMap(edges, width, height);
+        
+        for (let i = 0; i < width * height; i++) {
+            if (edges[i] > 0) {
+                const x = i % width;
+                const y = Math.floor(i / width);
+                
+                // Get person probability for this region
+                const personProb = this.getPersonProbability(personMap, x, y, width, height);
+                
+                // Enhance edges in person-like regions
+                if (personProb > 0.3) {
+                    enhanced[i] = Math.min(255, edges[i] * (1 + personProb));
+                } else {
+                    enhanced[i] = edges[i];
+                }
+            } else {
+                enhanced[i] = 0;
+            }
+        }
+        
+        return enhanced;
+    }
+
+    createPersonProbabilityMap(edges, width, height) {
+        const personMap = new Float32Array(width * height);
+        
+        // Analyze edge patterns that are typical of human shapes
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const idx = y * width + x;
+                
+                if (edges[idx] > 0) {
+                    // Check for vertical edge patterns (typical of human body)
+                    const verticalScore = this.checkVerticalPattern(edges, x, y, width, height);
+                    
+                    // Check for horizontal edge patterns (typical of human features)
+                    const horizontalScore = this.checkHorizontalPattern(edges, x, y, width, height);
+                    
+                    // Check for curved edge patterns (typical of human contours)
+                    const curvedScore = this.checkCurvedPattern(edges, x, y, width, height);
+                    
+                    // Combine scores
+                    personMap[idx] = (verticalScore + horizontalScore + curvedScore) / 3;
+                }
+            }
+        }
+        
+        return personMap;
+    }
+
+    checkVerticalPattern(edges, x, y, width, height) {
+        let verticalEdges = 0;
+        let totalEdges = 0;
+        
+        // Check vertical line pattern
+        for (let dy = -5; dy <= 5; dy++) {
+            const ny = y + dy;
+            if (ny >= 0 && ny < height) {
+                const idx = ny * width + x;
+                if (edges[idx] > 0) {
+                    verticalEdges++;
+                }
+                totalEdges++;
+            }
+        }
+        
+        return totalEdges > 0 ? verticalEdges / totalEdges : 0;
+    }
+
+    checkHorizontalPattern(edges, x, y, width, height) {
+        let horizontalEdges = 0;
+        let totalEdges = 0;
+        
+        // Check horizontal line pattern
+        for (let dx = -5; dx <= 5; dx++) {
+            const nx = x + dx;
+            if (nx >= 0 && nx < width) {
+                const idx = y * width + nx;
+                if (edges[idx] > 0) {
+                    horizontalEdges++;
+                }
+                totalEdges++;
+            }
+        }
+        
+        return totalEdges > 0 ? horizontalEdges / totalEdges : 0;
+    }
+
+    checkCurvedPattern(edges, x, y, width, height) {
+        let curvedEdges = 0;
+        let totalEdges = 0;
+        
+        // Check for curved patterns (arc-like structures)
+        for (let dy = -3; dy <= 3; dy++) {
+            for (let dx = -3; dx <= 3; dx++) {
+                const nx = x + dx;
+                const ny = y + dy;
+                
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                    const idx = ny * width + nx;
+                    if (edges[idx] > 0) {
+                        // Check if this forms part of a curve
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        if (distance > 0 && distance <= 3) {
+                            curvedEdges++;
+                        }
+                        totalEdges++;
+                    }
+                }
+            }
+        }
+        
+        return totalEdges > 0 ? curvedEdges / totalEdges : 0;
+    }
+
+    getPersonProbability(personMap, x, y, width, height) {
+        let totalProb = 0;
+        let count = 0;
+        
+        // Average probability in 7x7 neighborhood
+        for (let dy = -3; dy <= 3; dy++) {
+            for (let dx = -3; dx <= 3; dx++) {
+                const nx = x + dx;
+                const ny = y + dy;
+                
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                    const idx = ny * width + nx;
+                    totalProb += personMap[idx];
+                    count++;
+                }
+            }
+        }
+        
+        return count > 0 ? totalProb / count : 0;
+    }
+
     convertToGrayscale(data, width, height) {
         const grayscale = new Uint8ClampedArray(width * height);
         
@@ -309,18 +450,21 @@ class MathematicalOutlineGenerator {
         const sobelY = this.applySobelY(blurred, width, height);
         const prewittX = this.applyPrewittX(blurred, width, height);
         const prewittY = this.applyPrewittY(blurred, width, height);
+        const cannyX = this.applyCannyX(blurred, width, height);
+        const cannyY = this.applyCannyY(blurred, width, height);
         
         // Calculate gradient magnitude and direction using combined operators
         const magnitude = new Uint8ClampedArray(width * height);
         const direction = new Float32Array(width * height);
         
         for (let i = 0; i < width * height; i++) {
-            // Combine Sobel and Prewitt for better edge detection
+            // Combine multiple operators for better edge detection
             const sobelMag = Math.sqrt(sobelX[i] * sobelX[i] + sobelY[i] * sobelY[i]);
             const prewittMag = Math.sqrt(prewittX[i] * prewittX[i] + prewittY[i] * prewittY[i]);
+            const cannyMag = Math.sqrt(cannyX[i] * cannyX[i] + cannyY[i] * cannyY[i]);
             
-            // Weighted combination
-            magnitude[i] = 0.6 * sobelMag + 0.4 * prewittMag;
+            // Weighted combination with more emphasis on Canny
+            magnitude[i] = 0.4 * sobelMag + 0.3 * prewittMag + 0.3 * cannyMag;
             direction[i] = Math.atan2(sobelY[i], sobelX[i]);
         }
         
@@ -334,7 +478,10 @@ class MathematicalOutlineGenerator {
         const result = this.adaptiveDoubleThreshold(suppressed, width, height, threshold);
         
         // Final cleanup with connected component analysis
-        return this.connectedComponentCleanup(result, width, height);
+        const cleanedResult = this.connectedComponentCleanup(result, width, height);
+        
+        // Apply person-specific edge enhancement
+        return this.enhancePersonEdges(cleanedResult, width, height);
     }
 
     applyGaussianBlur(data, width, height, sigma) {
@@ -458,6 +605,46 @@ class MathematicalOutlineGenerator {
                     for (let kx = -1; kx <= 1; kx++) {
                         const idx = (ky + 1) * 3 + (kx + 1);
                         sum += data[(y + ky) * width + (x + kx)] * prewittY[idx];
+                    }
+                }
+                result[y * width + x] = sum;
+            }
+        }
+        
+        return result;
+    }
+
+    applyCannyX(data, width, height) {
+        const result = new Float32Array(width * height);
+        const cannyX = [-1, -1, -1, 0, 0, 0, 1, 1, 1];
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                let sum = 0;
+                for (let ky = -1; ky <= 1; ky++) {
+                    for (let kx = -1; kx <= 1; kx++) {
+                        const idx = (ky + 1) * 3 + (kx + 1);
+                        sum += data[(y + ky) * width + (x + kx)] * cannyX[idx];
+                    }
+                }
+                result[y * width + x] = sum;
+            }
+        }
+        
+        return result;
+    }
+
+    applyCannyY(data, width, height) {
+        const result = new Float32Array(width * height);
+        const cannyY = [-1, 0, 1, -1, 0, 1, -1, 0, 1];
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                let sum = 0;
+                for (let ky = -1; ky <= 1; ky++) {
+                    for (let kx = -1; kx <= 1; kx++) {
+                        const idx = (ky + 1) * 3 + (kx + 1);
+                        sum += data[(y + ky) * width + (x + kx)] * cannyY[idx];
                     }
                 }
                 result[y * width + x] = sum;
@@ -739,7 +926,261 @@ class MathematicalOutlineGenerator {
         }
         
         // Filter contours to focus on person-like shapes
-        return this.filterPersonContours(contours, width, height);
+        const personContours = this.filterPersonContours(contours, width, height);
+        
+        // Apply advanced person detection with feature analysis
+        return this.advancedPersonDetection(personContours, edgeData, width, height);
+    }
+
+    advancedPersonDetection(contours, edgeData, width, height) {
+        const detectedPersons = [];
+        
+        for (const contour of contours) {
+            // Calculate person confidence score
+            const confidence = this.calculatePersonConfidence(contour, edgeData, width, height);
+            
+            if (confidence > 0.7) { // High confidence threshold
+                detectedPersons.push(contour);
+            }
+        }
+        
+        // If no high-confidence persons found, try with lower threshold
+        if (detectedPersons.length === 0) {
+            for (const contour of contours) {
+                const confidence = this.calculatePersonConfidence(contour, edgeData, width, height);
+                if (confidence > 0.5) {
+                    detectedPersons.push(contour);
+                }
+            }
+        }
+        
+        return detectedPersons;
+    }
+
+    calculatePersonConfidence(contour, edgeData, width, height) {
+        let confidence = 0;
+        
+        // Basic shape analysis (30% weight)
+        const shapeScore = this.analyzeShape(contour);
+        confidence += shapeScore * 0.3;
+        
+        // Edge density analysis (25% weight)
+        const edgeDensityScore = this.analyzeEdgeDensity(contour, edgeData, width, height);
+        confidence += edgeDensityScore * 0.25;
+        
+        // Feature detection (25% weight)
+        const featureScore = this.detectHumanFeatures(contour, edgeData, width, height);
+        confidence += featureScore * 0.25;
+        
+        // Spatial distribution (20% weight)
+        const spatialScore = this.analyzeSpatialDistribution(contour, width, height);
+        confidence += spatialScore * 0.2;
+        
+        return confidence;
+    }
+
+    analyzeShape(contour) {
+        if (contour.length < 10) return 0;
+        
+        // Calculate shape characteristics
+        const perimeter = this.calculatePerimeter(contour);
+        const area = this.calculateArea(contour);
+        const compactness = (perimeter * perimeter) / (4 * Math.PI * area);
+        
+        // Human shapes are typically not too compact (not circular)
+        const compactnessScore = Math.max(0, 1 - (compactness - 1) / 2);
+        
+        // Check for elongation (humans are typically elongated)
+        const elongation = this.calculateElongation(contour);
+        const elongationScore = Math.min(1, elongation / 2);
+        
+        return (compactnessScore + elongationScore) / 2;
+    }
+
+    calculatePerimeter(contour) {
+        let perimeter = 0;
+        for (let i = 0; i < contour.length - 1; i++) {
+            const dx = contour[i + 1].x - contour[i].x;
+            const dy = contour[i + 1].y - contour[i].y;
+            perimeter += Math.sqrt(dx * dx + dy * dy);
+        }
+        return perimeter;
+    }
+
+    calculateArea(contour) {
+        let area = 0;
+        for (let i = 0; i < contour.length; i++) {
+            const j = (i + 1) % contour.length;
+            area += contour[i].x * contour[j].y;
+            area -= contour[j].x * contour[i].y;
+        }
+        return Math.abs(area) / 2;
+    }
+
+    calculateElongation(contour) {
+        // Calculate the ratio of major to minor axis
+        let sumX = 0, sumY = 0, sumXX = 0, sumYY = 0, sumXY = 0;
+        
+        for (const point of contour) {
+            sumX += point.x;
+            sumY += point.y;
+            sumXX += point.x * point.x;
+            sumYY += point.y * point.y;
+            sumXY += point.x * point.y;
+        }
+        
+        const n = contour.length;
+        const meanX = sumX / n;
+        const meanY = sumY / n;
+        
+        const varX = (sumXX / n) - (meanX * meanX);
+        const varY = (sumYY / n) - (meanY * meanY);
+        const covXY = (sumXY / n) - (meanX * meanY);
+        
+        const discriminant = Math.sqrt((varX - varY) * (varX - varY) + 4 * covXY * covXY);
+        const majorAxis = (varX + varY + discriminant) / 2;
+        const minorAxis = (varX + varY - discriminant) / 2;
+        
+        return majorAxis > 0 && minorAxis > 0 ? majorAxis / minorAxis : 1;
+    }
+
+    analyzeEdgeDensity(contour, edgeData, width, height) {
+        // Check if the contour has high edge density (typical of detailed human features)
+        let edgeCount = 0;
+        let totalPixels = 0;
+        
+        // Sample points along the contour
+        for (let i = 0; i < contour.length; i += 2) {
+            const point = contour[i];
+            const x = Math.floor(point.x);
+            const y = Math.floor(point.y);
+            
+            if (x >= 0 && x < width && y >= 0 && y < height) {
+                const idx = y * width + x;
+                if (edgeData[idx] > 0) {
+                    edgeCount++;
+                }
+                totalPixels++;
+            }
+        }
+        
+        return totalPixels > 0 ? edgeCount / totalPixels : 0;
+    }
+
+    detectHumanFeatures(contour, edgeData, width, height) {
+        // Look for human-specific features like head, shoulders, etc.
+        let featureScore = 0;
+        
+        // Check for head-like region (circular/oval shape at top)
+        const headScore = this.detectHeadRegion(contour);
+        featureScore += headScore * 0.4;
+        
+        // Check for shoulder-like regions (horizontal lines)
+        const shoulderScore = this.detectShoulderRegions(contour, edgeData, width, height);
+        featureScore += shoulderScore * 0.3;
+        
+        // Check for arm-like extensions
+        const armScore = this.detectArmExtensions(contour);
+        featureScore += armScore * 0.3;
+        
+        return featureScore;
+    }
+
+    detectHeadRegion(contour) {
+        // Find the top portion of the contour and check if it's roughly circular
+        const topPoints = contour.slice(0, Math.floor(contour.length * 0.3));
+        
+        if (topPoints.length < 5) return 0;
+        
+        // Calculate the bounding box of the top region
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const point of topPoints) {
+            minX = Math.min(minX, point.x);
+            maxX = Math.max(maxX, point.x);
+            minY = Math.min(minY, point.y);
+            maxY = Math.max(maxY, point.y);
+        }
+        
+        const width = maxX - minX;
+        const height = maxY - minY;
+        const aspectRatio = width / height;
+        
+        // Head should be roughly circular (aspect ratio close to 1)
+        return Math.max(0, 1 - Math.abs(aspectRatio - 1));
+    }
+
+    detectShoulderRegions(contour, edgeData, width, height) {
+        // Look for horizontal edge patterns in the upper-middle region
+        const middleStart = Math.floor(contour.length * 0.2);
+        const middleEnd = Math.floor(contour.length * 0.5);
+        const middlePoints = contour.slice(middleStart, middleEnd);
+        
+        let horizontalEdges = 0;
+        let totalEdges = 0;
+        
+        for (const point of middlePoints) {
+            const x = Math.floor(point.x);
+            const y = Math.floor(point.y);
+            
+            if (x >= 1 && x < width - 1 && y >= 0 && y < height) {
+                // Check for horizontal edge patterns
+                const left = edgeData[y * width + (x - 1)];
+                const center = edgeData[y * width + x];
+                const right = edgeData[y * width + (x + 1)];
+                
+                if (left > 0 && center > 0 && right > 0) {
+                    horizontalEdges++;
+                }
+                totalEdges++;
+            }
+        }
+        
+        return totalEdges > 0 ? horizontalEdges / totalEdges : 0;
+    }
+
+    detectArmExtensions(contour) {
+        // Look for protrusions that could be arms
+        let extensions = 0;
+        
+        for (let i = 1; i < contour.length - 1; i++) {
+            const prev = contour[i - 1];
+            const curr = contour[i];
+            const next = contour[i + 1];
+            
+            // Calculate if this point forms an extension
+            const angle1 = Math.atan2(curr.y - prev.y, curr.x - prev.x);
+            const angle2 = Math.atan2(next.y - curr.y, next.x - curr.x);
+            const angleDiff = Math.abs(angle1 - angle2);
+            
+            // Extensions have sharp angle changes
+            if (angleDiff > Math.PI / 2) {
+                extensions++;
+            }
+        }
+        
+        return Math.min(1, extensions / 10); // Normalize to 0-1
+    }
+
+    analyzeSpatialDistribution(contour, width, height) {
+        // Check if the contour is positioned in a typical human location
+        let centerX = 0, centerY = 0;
+        
+        for (const point of contour) {
+            centerX += point.x;
+            centerY += point.y;
+        }
+        
+        centerX /= contour.length;
+        centerY /= contour.length;
+        
+        // Humans are typically centered horizontally and in the middle-lower part vertically
+        const horizontalCenter = 1 - Math.abs(centerX - width / 2) / (width / 2);
+        const verticalPosition = centerY / height; // 0 = top, 1 = bottom
+        
+        // Prefer middle-lower vertical position
+        const verticalScore = verticalPosition > 0.3 && verticalPosition < 0.8 ? 1 : 0.5;
+        
+        return (horizontalCenter + verticalScore) / 2;
     }
 
     filterPersonContours(contours, width, height) {
@@ -751,7 +1192,32 @@ class MathematicalOutlineGenerator {
             }
         }
         
-        return personContours;
+        // Only keep the most significant person contours (max 3)
+        return this.selectMostSignificantContours(personContours, 3);
+    }
+
+    selectMostSignificantContours(contours, maxCount) {
+        if (contours.length <= maxCount) return contours;
+        
+        // Sort contours by significance (area and complexity)
+        const scoredContours = contours.map(contour => ({
+            contour: contour,
+            score: this.calculateContourSignificance(contour)
+        }));
+        
+        scoredContours.sort((a, b) => b.score - a.score);
+        
+        // Return only the most significant contours
+        return scoredContours.slice(0, maxCount).map(item => item.contour);
+    }
+
+    calculateContourSignificance(contour) {
+        const area = this.calculateArea(contour);
+        const perimeter = this.calculatePerimeter(contour);
+        const complexity = contour.length;
+        
+        // Combine area, perimeter, and complexity for significance score
+        return area * 0.5 + perimeter * 0.3 + complexity * 0.2;
     }
 
     isPersonLike(contour, width, height) {
@@ -774,6 +1240,7 @@ class MathematicalOutlineGenerator {
         // 1. Height should be greater than width (aspect ratio > 1.2)
         // 2. Should be reasonably sized (not too small or too large)
         // 3. Should have some complexity (not just a simple shape)
+        // 4. Should have human-like proportions
         
         const minSize = Math.min(width, height) * 0.1; // At least 10% of image
         const maxSize = Math.min(width, height) * 0.8; // At most 80% of image
@@ -781,10 +1248,130 @@ class MathematicalOutlineGenerator {
         const size = Math.max(bboxWidth, bboxHeight);
         const complexity = contour.length / (bboxWidth + bboxHeight);
         
+        // Check for human-like proportions
+        const humanProportions = this.checkHumanProportions(contour, bboxWidth, bboxHeight);
+        
+        // Check for symmetry (human faces/bodies are generally symmetrical)
+        const symmetry = this.checkSymmetry(contour, minX, maxX, minY, maxY);
+        
+        // Check for smoothness (human contours are generally smooth)
+        const smoothness = this.checkSmoothness(contour);
+        
         return aspectRatio > 1.2 && 
                size >= minSize && 
                size <= maxSize && 
-               complexity > 0.5;
+               complexity > 0.5 &&
+               humanProportions > 0.6 &&
+               symmetry > 0.4 &&
+               smoothness > 0.3;
+    }
+
+    checkHumanProportions(contour, bboxWidth, bboxHeight) {
+        // Check if the contour has human-like proportions
+        // Humans typically have head, torso, and legs in specific ratios
+        
+        const points = contour;
+        const centerX = bboxWidth / 2;
+        const centerY = bboxHeight / 2;
+        
+        let headRegion = 0;
+        let torsoRegion = 0;
+        let legRegion = 0;
+        
+        for (const point of points) {
+            const relativeY = (point.y - centerY) / bboxHeight;
+            
+            if (relativeY < -0.3) {
+                headRegion++; // Upper region (head)
+            } else if (relativeY < 0.2) {
+                torsoRegion++; // Middle region (torso)
+            } else {
+                legRegion++; // Lower region (legs)
+            }
+        }
+        
+        const total = headRegion + torsoRegion + legRegion;
+        if (total === 0) return 0;
+        
+        // Ideal human proportions: head ~15%, torso ~35%, legs ~50%
+        const headRatio = headRegion / total;
+        const torsoRatio = torsoRegion / total;
+        const legRatio = legRegion / total;
+        
+        const idealHead = 0.15;
+        const idealTorso = 0.35;
+        const idealLeg = 0.50;
+        
+        const headScore = 1 - Math.abs(headRatio - idealHead) / idealHead;
+        const torsoScore = 1 - Math.abs(torsoRatio - idealTorso) / idealTorso;
+        const legScore = 1 - Math.abs(legRatio - idealLeg) / idealLeg;
+        
+        return (headScore + torsoScore + legScore) / 3;
+    }
+
+    checkSymmetry(contour, minX, maxX, minY, maxY) {
+        // Check for vertical symmetry (typical of human faces/bodies)
+        const centerX = (minX + maxX) / 2;
+        const symmetryTolerance = (maxX - minX) * 0.1; // 10% tolerance
+        
+        let symmetricPoints = 0;
+        let totalPoints = 0;
+        
+        for (const point of contour) {
+            const distanceFromCenter = Math.abs(point.x - centerX);
+            
+            // Look for a corresponding point on the other side
+            const oppositeX = centerX + (centerX - point.x);
+            const oppositeY = point.y;
+            
+            // Check if there's a point near the opposite position
+            let foundOpposite = false;
+            for (const otherPoint of contour) {
+                const dx = Math.abs(otherPoint.x - oppositeX);
+                const dy = Math.abs(otherPoint.y - oppositeY);
+                
+                if (dx < symmetryTolerance && dy < symmetryTolerance) {
+                    foundOpposite = true;
+                    break;
+                }
+            }
+            
+            if (foundOpposite) {
+                symmetricPoints++;
+            }
+            totalPoints++;
+        }
+        
+        return totalPoints > 0 ? symmetricPoints / totalPoints : 0;
+    }
+
+    checkSmoothness(contour) {
+        // Check how smooth the contour is (human contours are generally smooth)
+        if (contour.length < 3) return 0;
+        
+        let smoothSegments = 0;
+        let totalSegments = 0;
+        
+        for (let i = 1; i < contour.length - 1; i++) {
+            const prev = contour[i - 1];
+            const curr = contour[i];
+            const next = contour[i + 1];
+            
+            // Calculate angles between consecutive segments
+            const angle1 = Math.atan2(curr.y - prev.y, curr.x - prev.x);
+            const angle2 = Math.atan2(next.y - curr.y, next.x - curr.x);
+            
+            const angleDiff = Math.abs(angle1 - angle2);
+            const angleDiffDegrees = angleDiff * 180 / Math.PI;
+            
+            // Smooth segments have small angle differences
+            if (angleDiffDegrees < 45) { // Less than 45 degrees
+                smoothSegments++;
+            }
+            totalSegments++;
+        }
+        
+        return totalSegments > 0 ? smoothSegments / totalSegments : 0;
     }
 
     traceContour(edgeData, width, height, startX, startY, visited) {
@@ -829,7 +1416,7 @@ class MathematicalOutlineGenerator {
         const outlines = [];
         
         for (const contour of contours) {
-            if (contour.length < 3) continue;
+            if (contour.length < 5) continue; // Skip very small contours
             
             let formula;
             switch (complexity) {
@@ -846,14 +1433,18 @@ class MathematicalOutlineGenerator {
                     formula = this.generateLinearFormula(contour);
             }
             
-            outlines.push(formula);
+            // Only add if formula was generated successfully
+            if (formula) {
+                outlines.push(formula);
+            }
         }
         
-        return outlines;
+        // Limit total number of outlines to keep equations manageable
+        return outlines.slice(0, 5); // Maximum 5 outlines
     }
 
     generateLinearFormula(contour) {
-        const points = this.simplifyContour(contour, 10);
+        const points = this.simplifyContour(contour, 15); // More aggressive simplification
         const segments = [];
         
         for (let i = 0; i < points.length - 1; i++) {
@@ -864,7 +1455,8 @@ class MathematicalOutlineGenerator {
             const dy = p2.y - p1.y;
             const length = Math.sqrt(dx * dx + dy * dy);
             
-            if (length > 5) { // Only significant segments
+            // Only include significant segments with higher threshold
+            if (length > 15) { // Increased minimum length
                 segments.push({
                     type: 'line',
                     x1: p1.x,
@@ -876,6 +1468,9 @@ class MathematicalOutlineGenerator {
             }
         }
         
+        // Only return if we have meaningful segments
+        if (segments.length === 0) return null;
+        
         return {
             type: 'linear',
             segments: segments,
@@ -884,22 +1479,31 @@ class MathematicalOutlineGenerator {
     }
 
     generateQuadraticFormula(contour) {
-        const points = this.simplifyContour(contour, 15);
+        const points = this.simplifyContour(contour, 20); // More aggressive simplification
         const curves = [];
         
-        for (let i = 0; i < points.length - 2; i += 2) {
+        for (let i = 0; i < points.length - 2; i += 3) { // Skip more points
             const p1 = points[i];
             const p2 = points[i + 1];
             const p3 = points[i + 2];
             
-            // Generate quadratic Bezier curve
-            curves.push({
-                type: 'quadratic',
-                x1: p1.x, y1: p1.y,
-                x2: p2.x, y2: p2.y,
-                x3: p3.x, y3: p3.y
-            });
+            // Check if this is a significant curve
+            const length1 = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
+            const length2 = Math.sqrt((p3.x - p2.x) ** 2 + (p3.y - p2.y) ** 2);
+            
+            // Only include significant curves
+            if (length1 > 12 && length2 > 12) {
+                curves.push({
+                    type: 'quadratic',
+                    x1: p1.x, y1: p1.y,
+                    x2: p2.x, y2: p2.y,
+                    x3: p3.x, y3: p3.y
+                });
+            }
         }
+        
+        // Only return if we have meaningful curves
+        if (curves.length === 0) return null;
         
         return {
             type: 'quadratic',
@@ -909,30 +1513,48 @@ class MathematicalOutlineGenerator {
     }
 
     generateSplineFormula(contour) {
-        const points = this.simplifyContour(contour, 20);
+        const points = this.simplifyContour(contour, 25); // More aggressive simplification
         const splines = [];
         
-        for (let i = 0; i < points.length - 3; i++) {
+        for (let i = 0; i < points.length - 3; i += 4) { // Skip more points
             const p1 = points[i];
             const p2 = points[i + 1];
             const p3 = points[i + 2];
             const p4 = points[i + 3];
             
-            // Generate cubic Bezier spline
-            splines.push({
-                type: 'cubic',
-                x1: p1.x, y1: p1.y,
-                x2: p2.x, y2: p2.y,
-                x3: p3.x, y3: p3.y,
-                x4: p4.x, y4: p4.y
-            });
+            // Check if this is a significant spline
+            const totalLength = this.calculateSegmentLength([p1, p2, p3, p4]);
+            
+            // Only include significant splines
+            if (totalLength > 20) {
+                splines.push({
+                    type: 'cubic',
+                    x1: p1.x, y1: p1.y,
+                    x2: p2.x, y2: p2.y,
+                    x3: p3.x, y3: p3.y,
+                    x4: p4.x, y4: p4.y
+                });
+            }
         }
+        
+        // Only return if we have meaningful splines
+        if (splines.length === 0) return null;
         
         return {
             type: 'spline',
             splines: splines,
             points: points
         };
+    }
+
+    calculateSegmentLength(points) {
+        let totalLength = 0;
+        for (let i = 0; i < points.length - 1; i++) {
+            const dx = points[i + 1].x - points[i].x;
+            const dy = points[i + 1].y - points[i].y;
+            totalLength += Math.sqrt(dx * dx + dy * dy);
+        }
+        return totalLength;
     }
 
     simplifyContour(contour, tolerance) {
@@ -1200,14 +1822,19 @@ class MathematicalOutlineGenerator {
         let formulas = '';
         const segments = outline.segments;
         
-        for (let i = 0; i < segments.length; i++) {
-            const segment = segments[i];
+        // Only include the most significant segments
+        const significantSegments = segments
+            .sort((a, b) => b.length - a.length)
+            .slice(0, 3); // Only top 3 segments
+        
+        for (let i = 0; i < significantSegments.length; i++) {
+            const segment = significantSegments[i];
             const m = (segment.y2 - segment.y1) / (segment.x2 - segment.x1);
             const c = segment.y1 - m * segment.x1;
             
             // Convert to Desmos format with range
             const xMin = Math.min(segment.x1, segment.x2);
-            const xMax = Math.max(segment.x1, segment.y2);
+            const xMax = Math.max(segment.x1, segment.x2);
             
             formulas += `y = ${m.toFixed(3)}x + ${c.toFixed(3)} \\{${xMin.toFixed(1)} < x < ${xMax.toFixed(1)}\\}\n`;
         }
@@ -1219,8 +1846,11 @@ class MathematicalOutlineGenerator {
         let formulas = '';
         const curves = outline.curves;
         
-        for (let i = 0; i < curves.length; i++) {
-            const curve = curves[i];
+        // Only include the most significant curves
+        const significantCurves = curves.slice(0, 2); // Only top 2 curves
+        
+        for (let i = 0; i < significantCurves.length; i++) {
+            const curve = significantCurves[i];
             
             // Convert quadratic Bezier to standard quadratic form: y = ax² + bx + c
             // Using the three points to solve for a, b, c
@@ -1253,8 +1883,11 @@ class MathematicalOutlineGenerator {
         let formulas = '';
         const splines = outline.splines;
         
-        for (let i = 0; i < splines.length; i++) {
-            const spline = splines[i];
+        // Only include the most significant splines
+        const significantSplines = splines.slice(0, 2); // Only top 2 splines
+        
+        for (let i = 0; i < significantSplines.length; i++) {
+            const spline = significantSplines[i];
             
             // For cubic splines, we'll use parametric equations
             // x(t) = (1-t)^3 * x1 + 3(1-t)^2 * t * x2 + 3(1-t) * t^2 * x3 + t^3 * x4
