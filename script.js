@@ -104,7 +104,7 @@ class MathematicalOutlineGenerator {
 
     displayOriginalImage() {
         const canvas = this.originalCanvas;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
         // Set canvas size
         const maxSize = 300;
@@ -146,7 +146,7 @@ class MathematicalOutlineGenerator {
     async detectEdges() {
         try {
             const canvas = this.edgesCanvas;
-            const ctx = canvas.getContext('2d');
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
             
             // Set canvas size same as original
             canvas.width = this.originalCanvas.width;
@@ -155,7 +155,7 @@ class MathematicalOutlineGenerator {
             // Draw original image
             ctx.drawImage(this.originalImage, 0, 0, canvas.width, canvas.height);
             
-            // Get image data
+            // Get image data once and cache it
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
             const data = imageData.data;
             
@@ -163,32 +163,37 @@ class MathematicalOutlineGenerator {
             const grayscale = this.convertToGrayscale(data, canvas.width, canvas.height);
             const edges = this.applyCannyEdgeDetection(grayscale, canvas.width, canvas.height);
             
-            // Detect skin tones for person identification
+            // Detect skin tones using the same cached image data
             const skinMask = this.detectSkinTones(data, canvas.width, canvas.height);
             
             // Combine edge detection with skin tone information
             const enhancedEdges = this.enhanceEdgesWithSkinTones(edges, skinMask, canvas.width, canvas.height);
             
-            // Display edges
-            const edgeImageData = new ImageData(canvas.width, canvas.height);
-            const edgeData = edgeImageData.data;
-            
-            for (let i = 0; i < enhancedEdges.length; i++) {
-                const value = enhancedEdges[i];
-                const pixelIndex = i * 4;
-                edgeData[pixelIndex] = value;     // Red
-                edgeData[pixelIndex + 1] = value; // Green
-                edgeData[pixelIndex + 2] = value; // Blue
-                edgeData[pixelIndex + 3] = 255;   // Alpha
-            }
-            
-            ctx.putImageData(edgeImageData, 0, 0);
+            // Display edges efficiently
+            this.displayEdges(ctx, enhancedEdges, canvas.width, canvas.height);
             
             this.edgeData = enhancedEdges;
         } catch (error) {
             console.error('Error in detectEdges:', error);
             throw error;
         }
+    }
+
+    displayEdges(ctx, edges, width, height) {
+        // Create ImageData once and reuse
+        const edgeImageData = new ImageData(width, height);
+        const edgeData = edgeImageData.data;
+        
+        for (let i = 0; i < edges.length; i++) {
+            const value = edges[i];
+            const pixelIndex = i * 4;
+            edgeData[pixelIndex] = value;     // Red
+            edgeData[pixelIndex + 1] = value; // Green
+            edgeData[pixelIndex + 2] = value; // Blue
+            edgeData[pixelIndex + 3] = 255;   // Alpha
+        }
+        
+        ctx.putImageData(edgeImageData, 0, 0);
     }
 
     enhanceEdgesWithSkinTones(edges, skinMask, width, height) {
@@ -241,6 +246,12 @@ class MathematicalOutlineGenerator {
         // Create a person probability map
         const personMap = this.createPersonProbabilityMap(edges, width, height);
         
+        // Apply HOG-like feature detection
+        const hogFeatures = this.extractHOGFeatures(edges, width, height);
+        
+        // Apply body part detection
+        const bodyParts = this.detectBodyParts(edges, width, height);
+        
         for (let i = 0; i < width * height; i++) {
             if (edges[i] > 0) {
                 const x = i % width;
@@ -249,9 +260,18 @@ class MathematicalOutlineGenerator {
                 // Get person probability for this region
                 const personProb = this.getPersonProbability(personMap, x, y, width, height);
                 
+                // Get HOG feature strength
+                const hogStrength = this.getHOGStrength(hogFeatures, x, y, width, height);
+                
+                // Get body part probability
+                const bodyPartProb = this.getBodyPartProbability(bodyParts, x, y, width, height);
+                
+                // Combine all probabilities
+                const combinedProb = (personProb * 0.4 + hogStrength * 0.3 + bodyPartProb * 0.3);
+                
                 // Enhance edges in person-like regions
-                if (personProb > 0.3) {
-                    enhanced[i] = Math.min(255, edges[i] * (1 + personProb));
+                if (combinedProb > 0.2) {
+                    enhanced[i] = Math.min(255, edges[i] * (1 + combinedProb));
                 } else {
                     enhanced[i] = edges[i];
                 }
@@ -261,6 +281,235 @@ class MathematicalOutlineGenerator {
         }
         
         return enhanced;
+    }
+
+    extractHOGFeatures(edges, width, height) {
+        const hogFeatures = new Float32Array(width * height);
+        const cellSize = 8;
+        const blockSize = 16;
+        
+        for (let y = 0; y < height; y += cellSize) {
+            for (let x = 0; x < width; x += cellSize) {
+                const gradients = this.calculateCellGradients(edges, x, y, cellSize, width, height);
+                const histogram = this.createGradientHistogram(gradients);
+                
+                // Apply histogram to the cell
+                for (let cy = 0; cy < cellSize && y + cy < height; cy++) {
+                    for (let cx = 0; cx < cellSize && x + cx < width; cx++) {
+                        const idx = (y + cy) * width + (x + cx);
+                        hogFeatures[idx] = this.getHistogramValue(histogram, cx, cy, cellSize);
+                    }
+                }
+            }
+        }
+        
+        return hogFeatures;
+    }
+
+    calculateCellGradients(edges, startX, startY, cellSize, width, height) {
+        const gradients = [];
+        
+        for (let y = startY; y < startY + cellSize && y < height; y++) {
+            for (let x = startX; x < startX + cellSize && x < width; x++) {
+                if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+                    const idx = y * width + x;
+                    const gx = edges[idx + 1] - edges[idx - 1];
+                    const gy = edges[(y + 1) * width + x] - edges[(y - 1) * width + x];
+                    
+                    gradients.push({
+                        magnitude: Math.sqrt(gx * gx + gy * gy),
+                        angle: Math.atan2(gy, gx)
+                    });
+                }
+            }
+        }
+        
+        return gradients;
+    }
+
+    createGradientHistogram(gradients) {
+        const bins = 9; // 9 orientation bins
+        const histogram = new Array(bins).fill(0);
+        
+        for (const gradient of gradients) {
+            const angle = gradient.angle;
+            const magnitude = gradient.magnitude;
+            
+            // Convert angle to bin index
+            let binIndex = Math.floor(((angle + Math.PI) / (2 * Math.PI)) * bins);
+            binIndex = Math.max(0, Math.min(bins - 1, binIndex));
+            
+            histogram[binIndex] += magnitude;
+        }
+        
+        return histogram;
+    }
+
+    getHistogramValue(histogram, x, y, cellSize) {
+        // Simple interpolation based on position within cell
+        const total = histogram.reduce((sum, val) => sum + val, 0);
+        return total / (cellSize * cellSize);
+    }
+
+    getHOGStrength(hogFeatures, x, y, width, height) {
+        let totalStrength = 0;
+        let count = 0;
+        
+        // Average HOG features in 5x5 neighborhood
+        for (let dy = -2; dy <= 2; dy++) {
+            for (let dx = -2; dx <= 2; dx++) {
+                const nx = x + dx;
+                const ny = y + dy;
+                
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                    const idx = ny * width + nx;
+                    totalStrength += hogFeatures[idx];
+                    count++;
+                }
+            }
+        }
+        
+        return count > 0 ? totalStrength / count : 0;
+    }
+
+    detectBodyParts(edges, width, height) {
+        const bodyParts = {
+            head: this.detectHeadRegion(edges, width, height),
+            torso: this.detectTorsoRegion(edges, width, height),
+            arms: this.detectArmRegions(edges, width, height),
+            legs: this.detectLegRegions(edges, width, height)
+        };
+        
+        return bodyParts;
+    }
+
+    detectHeadRegion(edges, width, height) {
+        const headMap = new Float32Array(width * height);
+        const headHeight = Math.floor(height * 0.15); // Head is typically 15% of body height
+        
+        for (let y = 0; y < headHeight; y++) {
+            for (let x = 0; x < width; x++) {
+                const idx = y * width + x;
+                if (edges[idx] > 0) {
+                    // Check for circular/oval patterns typical of heads
+                    const circularity = this.checkCircularity(edges, x, y, width, height, 10);
+                    headMap[idx] = circularity;
+                }
+            }
+        }
+        
+        return headMap;
+    }
+
+    detectTorsoRegion(edges, width, height) {
+        const torsoMap = new Float32Array(width * height);
+        const torsoStart = Math.floor(height * 0.15);
+        const torsoEnd = Math.floor(height * 0.6);
+        
+        for (let y = torsoStart; y < torsoEnd; y++) {
+            for (let x = 0; x < width; x++) {
+                const idx = y * width + x;
+                if (edges[idx] > 0) {
+                    // Check for vertical line patterns typical of torso
+                    const verticality = this.checkVerticalPattern(edges, x, y, width, height);
+                    torsoMap[idx] = verticality;
+                }
+            }
+        }
+        
+        return torsoMap;
+    }
+
+    detectArmRegions(edges, width, height) {
+        const armMap = new Float32Array(width * height);
+        const armStart = Math.floor(height * 0.2);
+        const armEnd = Math.floor(height * 0.7);
+        
+        for (let y = armStart; y < armEnd; y++) {
+            for (let x = 0; x < width; x++) {
+                const idx = y * width + x;
+                if (edges[idx] > 0) {
+                    // Check for horizontal extensions typical of arms
+                    const armExtension = this.checkArmExtension(edges, x, y, width, height);
+                    armMap[idx] = armExtension;
+                }
+            }
+        }
+        
+        return armMap;
+    }
+
+    detectLegRegions(edges, width, height) {
+        const legMap = new Float32Array(width * height);
+        const legStart = Math.floor(height * 0.6);
+        
+        for (let y = legStart; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const idx = y * width + x;
+                if (edges[idx] > 0) {
+                    // Check for vertical line patterns typical of legs
+                    const verticality = this.checkVerticalPattern(edges, x, y, width, height);
+                    legMap[idx] = verticality;
+                }
+            }
+        }
+        
+        return legMap;
+    }
+
+    checkCircularity(edges, x, y, width, height, radius) {
+        let edgeCount = 0;
+        let totalPoints = 0;
+        
+        for (let dy = -radius; dy <= radius; dy++) {
+            for (let dx = -radius; dx <= radius; dx++) {
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                if (distance <= radius) {
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        const idx = ny * width + nx;
+                        if (edges[idx] > 0) {
+                            edgeCount++;
+                        }
+                        totalPoints++;
+                    }
+                }
+            }
+        }
+        
+        return totalPoints > 0 ? edgeCount / totalPoints : 0;
+    }
+
+    checkArmExtension(edges, x, y, width, height) {
+        let horizontalEdges = 0;
+        let totalEdges = 0;
+        
+        // Check for horizontal extensions
+        for (let dx = -10; dx <= 10; dx++) {
+            const nx = x + dx;
+            if (nx >= 0 && nx < width) {
+                const idx = y * width + nx;
+                if (edges[idx] > 0) {
+                    horizontalEdges++;
+                }
+                totalEdges++;
+            }
+        }
+        
+        return totalEdges > 0 ? horizontalEdges / totalEdges : 0;
+    }
+
+    getBodyPartProbability(bodyParts, x, y, width, height) {
+        const idx = y * width + x;
+        const headProb = bodyParts.head[idx] || 0;
+        const torsoProb = bodyParts.torso[idx] || 0;
+        const armProb = bodyParts.arms[idx] || 0;
+        const legProb = bodyParts.legs[idx] || 0;
+        
+        // Weight different body parts
+        return headProb * 0.3 + torsoProb * 0.4 + armProb * 0.2 + legProb * 0.1;
     }
 
     createPersonProbabilityMap(edges, width, height) {
@@ -452,6 +701,7 @@ class MathematicalOutlineGenerator {
         const prewittY = this.applyPrewittY(blurred, width, height);
         const cannyX = this.applyCannyX(blurred, width, height);
         const cannyY = this.applyCannyY(blurred, width, height);
+        const laplacian = this.applyLaplacian(blurred, width, height);
         
         // Calculate gradient magnitude and direction using combined operators
         const magnitude = new Uint8ClampedArray(width * height);
@@ -462,9 +712,10 @@ class MathematicalOutlineGenerator {
             const sobelMag = Math.sqrt(sobelX[i] * sobelX[i] + sobelY[i] * sobelY[i]);
             const prewittMag = Math.sqrt(prewittX[i] * prewittX[i] + prewittY[i] * prewittY[i]);
             const cannyMag = Math.sqrt(cannyX[i] * cannyX[i] + cannyY[i] * cannyY[i]);
+            const laplacianMag = Math.abs(laplacian[i]);
             
-            // Weighted combination with more emphasis on Canny
-            magnitude[i] = 0.4 * sobelMag + 0.3 * prewittMag + 0.3 * cannyMag;
+            // Weighted combination with emphasis on person-specific features
+            magnitude[i] = 0.3 * sobelMag + 0.2 * prewittMag + 0.3 * cannyMag + 0.2 * laplacianMag;
             direction[i] = Math.atan2(sobelY[i], sobelX[i]);
         }
         
@@ -648,6 +899,31 @@ class MathematicalOutlineGenerator {
                     }
                 }
                 result[y * width + x] = sum;
+            }
+        }
+        
+        return result;
+    }
+
+    applyLaplacian(data, width, height) {
+        const laplacian = [
+            [-1, -1, -1],
+            [-1,  8, -1],
+            [-1, -1, -1]
+        ];
+        
+        const result = new Uint8ClampedArray(width * height);
+        
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                let sum = 0;
+                for (let ky = -1; ky <= 1; ky++) {
+                    for (let kx = -1; kx <= 1; kx++) {
+                        const value = data[(y + ky) * width + (x + kx)];
+                        sum += laplacian[ky + 1][kx + 1] * value;
+                    }
+                }
+                result[y * width + x] = Math.min(255, Math.max(0, sum));
             }
         }
         
@@ -890,7 +1166,7 @@ class MathematicalOutlineGenerator {
 
     generateMathematicalOutlines() {
         const canvas = this.outlinesCanvas;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
         canvas.width = this.edgesCanvas.width;
         canvas.height = this.edgesCanvas.height;
@@ -960,23 +1236,260 @@ class MathematicalOutlineGenerator {
     calculatePersonConfidence(contour, edgeData, width, height) {
         let confidence = 0;
         
-        // Basic shape analysis (30% weight)
+        // Basic shape analysis (25% weight)
         const shapeScore = this.analyzeShape(contour);
-        confidence += shapeScore * 0.3;
+        confidence += shapeScore * 0.25;
         
-        // Edge density analysis (25% weight)
+        // Edge density analysis (20% weight)
         const edgeDensityScore = this.analyzeEdgeDensity(contour, edgeData, width, height);
-        confidence += edgeDensityScore * 0.25;
+        confidence += edgeDensityScore * 0.2;
         
         // Feature detection (25% weight)
         const featureScore = this.detectHumanFeatures(contour, edgeData, width, height);
         confidence += featureScore * 0.25;
         
-        // Spatial distribution (20% weight)
+        // Spatial distribution (15% weight)
         const spatialScore = this.analyzeSpatialDistribution(contour, width, height);
-        confidence += spatialScore * 0.2;
+        confidence += spatialScore * 0.15;
+        
+        // Pose estimation (15% weight)
+        const poseScore = this.estimatePose(contour, edgeData, width, height);
+        confidence += poseScore * 0.15;
         
         return confidence;
+    }
+
+    estimatePose(contour, edgeData, width, height) {
+        // Estimate human pose by analyzing body proportions and joint positions
+        let poseScore = 0;
+        
+        // Calculate bounding box
+        let minX = width, maxX = 0, minY = height, maxY = 0;
+        for (const point of contour) {
+            minX = Math.min(minX, point.x);
+            maxX = Math.max(maxX, point.x);
+            minY = Math.min(minY, point.y);
+            maxY = Math.max(maxY, point.y);
+        }
+        
+        const bboxWidth = maxX - minX;
+        const bboxHeight = maxY - minY;
+        
+        // Check for typical human pose proportions
+        const aspectRatio = bboxHeight / bboxWidth;
+        if (aspectRatio > 1.5 && aspectRatio < 3.0) {
+            poseScore += 0.3; // Good height-to-width ratio
+        }
+        
+        // Detect potential joint positions
+        const joints = this.detectJoints(contour, edgeData, width, height);
+        poseScore += joints.score * 0.4;
+        
+        // Check for standing pose (vertical alignment)
+        const verticalAlignment = this.checkVerticalAlignment(contour);
+        poseScore += verticalAlignment * 0.3;
+        
+        return poseScore;
+    }
+
+    detectJoints(contour, edgeData, width, height) {
+        const joints = {
+            head: null,
+            neck: null,
+            shoulders: [],
+            elbows: [],
+            hips: [],
+            knees: [],
+            score: 0
+        };
+        
+        // Find potential head position (top of contour)
+        const sortedPoints = contour.sort((a, b) => a.y - b.y);
+        const headCandidates = sortedPoints.slice(0, Math.floor(contour.length * 0.1));
+        
+        if (headCandidates.length > 0) {
+            const headCenter = this.findCenter(headCandidates);
+            joints.head = headCenter;
+            joints.score += 0.2;
+        }
+        
+        // Find potential shoulder positions
+        const shoulderY = Math.floor(height * 0.2);
+        const shoulderCandidates = contour.filter(p => Math.abs(p.y - shoulderY) < 10);
+        if (shoulderCandidates.length > 0) {
+            joints.shoulders = this.findShoulderPair(shoulderCandidates);
+            joints.score += 0.2;
+        }
+        
+        // Find potential hip positions
+        const hipY = Math.floor(height * 0.6);
+        const hipCandidates = contour.filter(p => Math.abs(p.y - hipY) < 10);
+        if (hipCandidates.length > 0) {
+            joints.hips = this.findHipPair(hipCandidates);
+            joints.score += 0.2;
+        }
+        
+        return joints;
+    }
+
+    findCenter(points) {
+        let sumX = 0, sumY = 0;
+        for (const point of points) {
+            sumX += point.x;
+            sumY += point.y;
+        }
+        return {
+            x: sumX / points.length,
+            y: sumY / points.length
+        };
+    }
+
+    findShoulderPair(candidates) {
+        // Find two points that could represent shoulders
+        const sorted = candidates.sort((a, b) => a.x - b.x);
+        if (sorted.length >= 2) {
+            return [sorted[0], sorted[sorted.length - 1]];
+        }
+        return [];
+    }
+
+    findHipPair(candidates) {
+        // Find two points that could represent hips
+        const sorted = candidates.sort((a, b) => a.x - b.x);
+        if (sorted.length >= 2) {
+            return [sorted[0], sorted[sorted.length - 1]];
+        }
+        return [];
+    }
+
+    checkVerticalAlignment(contour) {
+        // Check if the contour is vertically aligned (typical of standing pose)
+        let verticalSegments = 0;
+        let totalSegments = 0;
+        
+        for (let i = 0; i < contour.length - 1; i++) {
+            const p1 = contour[i];
+            const p2 = contour[i + 1];
+            
+            const dx = Math.abs(p2.x - p1.x);
+            const dy = Math.abs(p2.y - p1.y);
+            
+            if (dy > dx) { // More vertical than horizontal
+                verticalSegments++;
+            }
+            totalSegments++;
+        }
+        
+        return totalSegments > 0 ? verticalSegments / totalSegments : 0;
+    }
+
+    detectHumanFeatures(contour, edgeData, width, height) {
+        // Look for human-specific features like head, shoulders, etc.
+        let featureScore = 0;
+        
+        // Check for head-like region (circular/oval shape at top)
+        const headScore = this.detectHeadRegion(contour);
+        featureScore += headScore * 0.3;
+        
+        // Check for shoulder-like regions (horizontal lines)
+        const shoulderScore = this.detectShoulderRegions(contour, edgeData, width, height);
+        featureScore += shoulderScore * 0.25;
+        
+        // Check for arm-like extensions
+        const armScore = this.detectArmExtensions(contour);
+        featureScore += armScore * 0.25;
+        
+        // Check for facial features
+        const facialScore = this.detectFacialFeatures(contour, edgeData, width, height);
+        featureScore += facialScore * 0.2;
+        
+        return featureScore;
+    }
+
+    detectFacialFeatures(contour, edgeData, width, height) {
+        // Look for facial features like eyes, nose, mouth
+        let facialScore = 0;
+        
+        // Find the top portion of the contour (potential face region)
+        const topPoints = contour.slice(0, Math.floor(contour.length * 0.2));
+        
+        if (topPoints.length > 5) {
+            // Check for symmetry in the face region
+            const symmetry = this.checkFacialSymmetry(topPoints);
+            facialScore += symmetry * 0.5;
+            
+            // Check for horizontal features (eyes, mouth)
+            const horizontalFeatures = this.detectHorizontalFeatures(topPoints, edgeData, width, height);
+            facialScore += horizontalFeatures * 0.5;
+        }
+        
+        return facialScore;
+    }
+
+    checkFacialSymmetry(points) {
+        if (points.length < 3) return 0;
+        
+        // Find the center line
+        const centerX = points.reduce((sum, p) => sum + p.x, 0) / points.length;
+        
+        let symmetricPairs = 0;
+        let totalPoints = 0;
+        
+        for (let i = 0; i < points.length; i++) {
+            const point = points[i];
+            const distanceFromCenter = Math.abs(point.x - centerX);
+            
+            // Look for a corresponding point on the other side
+            const oppositeX = centerX + (centerX - point.x);
+            const oppositeY = point.y;
+            
+            // Check if there's a point near the opposite position
+            let foundOpposite = false;
+            for (const otherPoint of points) {
+                const dx = Math.abs(otherPoint.x - oppositeX);
+                const dy = Math.abs(otherPoint.y - oppositeY);
+                
+                if (dx < 5 && dy < 5) { // 5 pixel tolerance
+                    foundOpposite = true;
+                    break;
+                }
+            }
+            
+            if (foundOpposite) {
+                symmetricPairs++;
+            }
+            totalPoints++;
+        }
+        
+        return totalPoints > 0 ? symmetricPairs / totalPoints : 0;
+    }
+
+    detectHorizontalFeatures(points, edgeData, width, height) {
+        // Look for horizontal lines that could be eyes or mouth
+        let horizontalFeatures = 0;
+        
+        for (const point of points) {
+            const x = Math.floor(point.x);
+            const y = Math.floor(point.y);
+            
+            if (x >= 2 && x < width - 2 && y >= 0 && y < height) {
+                // Check for horizontal edge patterns
+                let horizontalCount = 0;
+                for (let dx = -2; dx <= 2; dx++) {
+                    const nx = x + dx;
+                    const idx = y * width + nx;
+                    if (edgeData[idx] > 0) {
+                        horizontalCount++;
+                    }
+                }
+                
+                if (horizontalCount >= 3) { // At least 3 horizontal edges
+                    horizontalFeatures++;
+                }
+            }
+        }
+        
+        return points.length > 0 ? horizontalFeatures / points.length : 0;
     }
 
     analyzeShape(contour) {
@@ -1065,25 +1578,6 @@ class MathematicalOutlineGenerator {
         }
         
         return totalPixels > 0 ? edgeCount / totalPixels : 0;
-    }
-
-    detectHumanFeatures(contour, edgeData, width, height) {
-        // Look for human-specific features like head, shoulders, etc.
-        let featureScore = 0;
-        
-        // Check for head-like region (circular/oval shape at top)
-        const headScore = this.detectHeadRegion(contour);
-        featureScore += headScore * 0.4;
-        
-        // Check for shoulder-like regions (horizontal lines)
-        const shoulderScore = this.detectShoulderRegions(contour, edgeData, width, height);
-        featureScore += shoulderScore * 0.3;
-        
-        // Check for arm-like extensions
-        const armScore = this.detectArmExtensions(contour);
-        featureScore += armScore * 0.3;
-        
-        return featureScore;
     }
 
     detectHeadRegion(contour) {
@@ -1656,7 +2150,7 @@ class MathematicalOutlineGenerator {
     
     createBlackOutlinePreview() {
         const canvas = this.blackOutlineCanvas;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
         // Set canvas size same as original
         canvas.width = this.originalCanvas.width;
@@ -1724,7 +2218,7 @@ class MathematicalOutlineGenerator {
         canvas.style.border = '1px solid #e5e7eb';
         canvas.style.borderRadius = '4px';
         
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         
         // Clear canvas with white background
         ctx.fillStyle = 'white';
