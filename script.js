@@ -2097,6 +2097,377 @@ class MathematicalOutlineGenerator {
             height: maxY - minY
         };
     }
+
+    extractContours(edges, width, height) {
+        const contours = [];
+        const visited = new Uint8Array(width * height);
+        
+        // Multi-threshold approach for better contour extraction
+        const thresholds = [255, 128, 64];
+        
+        for (const threshold of thresholds) {
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const index = y * width + x;
+                    
+                    if (edges[index] >= threshold && !visited[index]) {
+                        const contour = this.traceContourEnhanced(edges, visited, x, y, width, height, threshold);
+                        
+                        if (contour.length >= 20) { // Minimum contour length
+                            contours.push(contour);
+                        }
+                    }
+                }
+            }
+        }
+        
+        return contours;
+    }
+
+    traceContourEnhanced(edges, visited, startX, startY, width, height, threshold) {
+        const contour = [];
+        const stack = [{x: startX, y: startY}];
+        
+        while (stack.length > 0) {
+            const {x, y} = stack.pop();
+            const index = y * width + x;
+            
+            if (x < 0 || x >= width || y < 0 || y >= height || 
+                visited[index] || edges[index] < threshold) {
+                continue;
+            }
+            
+            visited[index] = 1;
+            contour.push({x: x, y: y});
+            
+            // 8-connectivity for better contour tracing
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    const neighborIndex = ny * width + nx;
+                    
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height &&
+                        !visited[neighborIndex] && edges[neighborIndex] >= threshold) {
+                        stack.push({x: nx, y: ny});
+                    }
+                }
+            }
+        }
+        
+        // If contour is too small, try with lower threshold
+        if (contour.length < 20 && threshold > 32) {
+            return this.traceContourEnhanced(edges, visited, startX, startY, width, height, threshold / 2);
+        }
+        
+        return contour;
+    }
+
+    calculateArea(contour) {
+        if (contour.length < 3) return 0;
+        
+        let area = 0;
+        for (let i = 0; i < contour.length; i++) {
+            const j = (i + 1) % contour.length;
+            area += contour[i].x * contour[j].y;
+            area -= contour[j].x * contour[i].y;
+        }
+        
+        return Math.abs(area) / 2;
+    }
+
+    calculatePerimeter(contour) {
+        if (contour.length < 2) return 0;
+        
+        let perimeter = 0;
+        for (let i = 0; i < contour.length; i++) {
+            const j = (i + 1) % contour.length;
+            const dx = contour[j].x - contour[i].x;
+            const dy = contour[j].y - contour[i].y;
+            perimeter += Math.sqrt(dx * dx + dy * dy);
+        }
+        
+        return perimeter;
+    }
+
+    calculateAspectRatio(contour) {
+        if (contour.length === 0) return 0;
+        
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        
+        for (const point of contour) {
+            minX = Math.min(minX, point.x);
+            maxX = Math.max(maxX, point.x);
+            minY = Math.min(minY, point.y);
+            maxY = Math.max(maxY, point.y);
+        }
+        
+        const width = maxX - minX;
+        const height = maxY - minY;
+        
+        if (height === 0) return 0;
+        return width / height;
+    }
+
+    calculateComplexity(contour) {
+        if (contour.length < 3) return 0;
+        
+        const perimeter = this.calculatePerimeter(contour);
+        const area = this.calculateArea(contour);
+        
+        if (area === 0) return 0;
+        
+        // Complexity based on perimeter-to-area ratio
+        return perimeter / Math.sqrt(area);
+    }
+
+    checkHumanProportions(contour) {
+        if (contour.length === 0) return 0;
+        
+        const bounds = this.getBoundingBox(contour);
+        const aspectRatio = bounds.width / bounds.height;
+        
+        // Human proportions typically have aspect ratio between 0.3 and 0.8
+        if (aspectRatio >= 0.3 && aspectRatio <= 0.8) {
+            return 1.0;
+        } else if (aspectRatio >= 0.2 && aspectRatio <= 1.0) {
+            return 0.5;
+        }
+        
+        return 0.0;
+    }
+
+    checkSymmetry(contour) {
+        if (contour.length < 4) return 0;
+        
+        const bounds = this.getBoundingBox(contour);
+        const centerX = bounds.x + bounds.width / 2;
+        
+        let symmetryScore = 0;
+        let comparisons = 0;
+        
+        for (let i = 0; i < contour.length / 2; i++) {
+            const point1 = contour[i];
+            const point2 = contour[contour.length - 1 - i];
+            
+            const distance1 = Math.abs(point1.x - centerX);
+            const distance2 = Math.abs(point2.x - centerX);
+            
+            if (Math.abs(distance1 - distance2) < 10) { // Tolerance for symmetry
+                symmetryScore++;
+            }
+            comparisons++;
+        }
+        
+        return comparisons > 0 ? symmetryScore / comparisons : 0;
+    }
+
+    checkSmoothness(contour) {
+        if (contour.length < 3) return 0;
+        
+        let smoothness = 0;
+        let comparisons = 0;
+        
+        for (let i = 1; i < contour.length - 1; i++) {
+            const prev = contour[i - 1];
+            const curr = contour[i];
+            const next = contour[i + 1];
+            
+            // Calculate angle between segments
+            const angle1 = Math.atan2(curr.y - prev.y, curr.x - prev.x);
+            const angle2 = Math.atan2(next.y - curr.y, next.x - curr.x);
+            
+            const angleDiff = Math.abs(angle1 - angle2);
+            const normalizedDiff = Math.min(angleDiff, 2 * Math.PI - angleDiff) / Math.PI;
+            
+            smoothness += 1 - normalizedDiff;
+            comparisons++;
+        }
+        
+        return comparisons > 0 ? smoothness / comparisons : 0;
+    }
+
+    estimatePose(contour) {
+        if (contour.length < 10) return 0;
+        
+        // Simple pose estimation based on contour shape
+        const bounds = this.getBoundingBox(contour);
+        const aspectRatio = bounds.width / bounds.height;
+        
+        // Standing pose typically has height > width
+        if (aspectRatio < 0.8) {
+            return 0.8;
+        } else if (aspectRatio < 1.2) {
+            return 0.5;
+        }
+        
+        return 0.2;
+    }
+
+    detectFacialFeatures(contour) {
+        if (contour.length < 10) return 0;
+        
+        const bounds = this.getBoundingBox(contour);
+        const upperRegion = bounds.y + bounds.height * 0.3;
+        
+        let facialFeatures = 0;
+        let totalUpperPoints = 0;
+        
+        for (const point of contour) {
+            if (point.y <= upperRegion) {
+                totalUpperPoints++;
+                
+                // Check for facial feature patterns
+                const featureScore = this.checkFacialSymmetry(point, contour, bounds);
+                if (featureScore > 0.5) {
+                    facialFeatures++;
+                }
+            }
+        }
+        
+        return totalUpperPoints > 0 ? facialFeatures / totalUpperPoints : 0;
+    }
+
+    checkFacialSymmetry(point, contour, bounds) {
+        const centerX = bounds.x + bounds.width / 2;
+        const distanceFromCenter = Math.abs(point.x - centerX);
+        
+        // Check if there's a corresponding point on the other side
+        for (const otherPoint of contour) {
+            const otherDistance = Math.abs(otherPoint.x - centerX);
+            if (Math.abs(distanceFromCenter - otherDistance) < 5 && 
+                Math.abs(point.y - otherPoint.y) < 10) {
+                return 1.0;
+            }
+        }
+        
+        return 0.0;
+    }
+
+    detectBodyParts(contour) {
+        if (contour.length < 20) return 0;
+        
+        const headRegion = this.detectHeadRegion(contour);
+        const torsoRegion = this.detectTorsoRegion(contour);
+        const armRegions = this.detectArmRegions(contour);
+        const legRegions = this.detectLegRegions(contour);
+        
+        return (headRegion + torsoRegion + armRegions + legRegions) / 4;
+    }
+
+    detectHeadRegion(contour) {
+        const bounds = this.getBoundingBox(contour);
+        const upperRegion = bounds.y + bounds.height * 0.2;
+        
+        let headPoints = 0;
+        let totalUpperPoints = 0;
+        
+        for (const point of contour) {
+            if (point.y <= upperRegion) {
+                totalUpperPoints++;
+                if (this.checkCircularity(point, contour, bounds)) {
+                    headPoints++;
+                }
+            }
+        }
+        
+        return totalUpperPoints > 0 ? headPoints / totalUpperPoints : 0;
+    }
+
+    detectTorsoRegion(contour) {
+        const bounds = this.getBoundingBox(contour);
+        const midRegionStart = bounds.y + bounds.height * 0.2;
+        const midRegionEnd = bounds.y + bounds.height * 0.6;
+        
+        let torsoPoints = 0;
+        let totalMidPoints = 0;
+        
+        for (const point of contour) {
+            if (point.y >= midRegionStart && point.y <= midRegionEnd) {
+                totalMidPoints++;
+                if (this.checkVerticalAlignment(point, contour, bounds)) {
+                    torsoPoints++;
+                }
+            }
+        }
+        
+        return totalMidPoints > 0 ? torsoPoints / totalMidPoints : 0;
+    }
+
+    detectArmRegions(contour) {
+        const bounds = this.getBoundingBox(contour);
+        const armRegionStart = bounds.y + bounds.height * 0.2;
+        const armRegionEnd = bounds.y + bounds.height * 0.7;
+        
+        let armPoints = 0;
+        let totalArmPoints = 0;
+        
+        for (const point of contour) {
+            if (point.y >= armRegionStart && point.y <= armRegionEnd) {
+                totalArmPoints++;
+                if (this.checkArmExtension(point, contour, bounds)) {
+                    armPoints++;
+                }
+            }
+        }
+        
+        return totalArmPoints > 0 ? armPoints / totalArmPoints : 0;
+    }
+
+    detectLegRegions(contour) {
+        const bounds = this.getBoundingBox(contour);
+        const legRegionStart = bounds.y + bounds.height * 0.6;
+        
+        let legPoints = 0;
+        let totalLegPoints = 0;
+        
+        for (const point of contour) {
+            if (point.y >= legRegionStart) {
+                totalLegPoints++;
+                if (this.checkVerticalAlignment(point, contour, bounds)) {
+                    legPoints++;
+                }
+            }
+        }
+        
+        return totalLegPoints > 0 ? legPoints / totalLegPoints : 0;
+    }
+
+    checkCircularity(point, contour, bounds) {
+        const centerX = bounds.x + bounds.width / 2;
+        const centerY = bounds.y + bounds.height * 0.1;
+        const radius = bounds.width * 0.3;
+        
+        const distance = Math.sqrt((point.x - centerX) ** 2 + (point.y - centerY) ** 2);
+        return Math.abs(distance - radius) < radius * 0.3;
+    }
+
+    checkVerticalAlignment(point, contour, bounds) {
+        const centerX = bounds.x + bounds.width / 2;
+        return Math.abs(point.x - centerX) < bounds.width * 0.4;
+    }
+
+    checkArmExtension(point, contour, bounds) {
+        const centerX = bounds.x + bounds.width / 2;
+        const distanceFromCenter = Math.abs(point.x - centerX);
+        return distanceFromCenter > bounds.width * 0.3;
+    }
+
+    calculateSegmentLength(points) {
+        if (points.length < 2) return 0;
+        
+        let totalLength = 0;
+        for (let i = 0; i < points.length - 1; i++) {
+            const dx = points[i + 1].x - points[i].x;
+            const dy = points[i + 1].y - points[i].y;
+            totalLength += Math.sqrt(dx * dx + dy * dy);
+        }
+        
+        return totalLength;
+    }
 }
 
 // Initialize the application
