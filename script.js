@@ -746,8 +746,10 @@ class MathematicalOutlineGenerator {
         const laplacian = this.applyLaplacian(blurred, width, height);
         
         // Enhanced edge detection with higher sensitivity for fine details
-        const edges = new Uint8Array(width * height);
-        for (let i = 0; i < edges.length; i++) {
+        const magnitude = new Uint8Array(width * height);
+        const direction = new Float32Array(width * height);
+        
+        for (let i = 0; i < magnitude.length; i++) {
             const sobelMag = Math.sqrt(sobelX[i] * sobelX[i] + sobelY[i] * sobelY[i]);
             const prewittMag = Math.sqrt(prewittX[i] * prewittX[i] + prewittY[i] * prewittY[i]);
             const laplacianMag = Math.abs(laplacian[i]);
@@ -755,15 +757,16 @@ class MathematicalOutlineGenerator {
             // Weighted combination with higher sensitivity for fine details
             const combined = (0.3 * sobelMag + 0.3 * prewittMag + 0.4 * laplacianMag);
             
-            // Lower threshold for better hair detection
-            edges[i] = combined > 15 ? 255 : 0; // Lowered from 20 to 15
+            // Store magnitude and direction
+            magnitude[i] = combined > 15 ? combined : 0;
+            direction[i] = Math.atan2(sobelY[i], sobelX[i]);
         }
         
         // Apply morphological operations to enhance fine details
-        const enhanced = this.morphologicalCleanup(edges, width, height);
+        const enhanced = this.morphologicalCleanup(magnitude, width, height);
         
         // Apply non-maximum suppression with higher sensitivity
-        const suppressed = this.improvedNonMaximumSuppression(enhanced, width, height);
+        const suppressed = this.improvedNonMaximumSuppression(enhanced, direction, width, height);
         
         // Apply adaptive double thresholding with lower thresholds for hair
         const thresholded = this.adaptiveDoubleThreshold(suppressed, width, height);
