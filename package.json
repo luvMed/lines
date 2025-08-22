@@ -20,7 +20,7 @@
   ],
   "author": "Your Name",
   "license": "MIT",
-  "devDependencies": {
+  "dependencies": {
     "http-server": "^14.1.1"
   },
   "engines": {
