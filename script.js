@@ -1229,15 +1229,15 @@ class MathematicalOutlineGenerator {
             const x3 = curve.x3, y3 = curve.y3;
             
             // Solve system of equations:
-            // y1 = ax1² + bx1 + c
-            // y2 = ax2² + bx2 + c  
-            // y3 = ax3² + bx3 + c
+            // y1 = ax1^2 + bx1 + c
+            // y2 = ax2^2 + bx2 + c  
+            // y3 = ax3^2 + bx3 + c
             
             const det = (x1 - x2) * (x2 - x3) * (x3 - x1);
             if (Math.abs(det) > 0.001) { // Avoid division by zero
                 const a = ((y1 - y2) * (x2 - x3) - (y2 - y3) * (x1 - x2)) / det;
-                const b = ((y1 - y2) * (x2² - x3²) - (y2 - y3) * (x1² - x2²)) / det;
-                const c = y1 - a * x1² - b * x1;
+                const b = ((y1 - y2) * (x2 * x2 - x3 * x3) - (y2 - y3) * (x1 * x1 - x2 * x2)) / det;
+                const c = y1 - a * x1 * x1 - b * x1;
                 
                 const xMin = Math.min(x1, x2, x3);
                 const xMax = Math.max(x1, x2, x3);
@@ -1257,8 +1257,8 @@ class MathematicalOutlineGenerator {
             const spline = splines[i];
             
             // For cubic splines, we'll use parametric equations
-            // x(t) = (1-t)³x1 + 3(1-t)²tx2 + 3(1-t)t²x3 + t³x4
-            // y(t) = (1-t)³y1 + 3(1-t)²ty2 + 3(1-t)t²y3 + t³y4
+            // x(t) = (1-t)^3 * x1 + 3(1-t)^2 * t * x2 + 3(1-t) * t^2 * x3 + t^3 * x4
+            // y(t) = (1-t)^3 * y1 + 3(1-t)^2 * t * y2 + 3(1-t) * t^2 * y3 + t^3 * y4
             
             const x1 = spline.x1, y1 = spline.y1;
             const x2 = spline.x2, y2 = spline.y2;
@@ -1278,25 +1278,25 @@ class MathematicalOutlineGenerator {
     async copyToClipboard() {
         try {
             await navigator.clipboard.writeText(this.formulaOutput.textContent);
-                         this.copyBtn.textContent = 'Copied!';
-             setTimeout(() => {
-                 this.copyBtn.textContent = 'Copy Desmos Formulas';
-             }, 2000);
-                 } catch (err) {
-             console.error('Failed to copy: ', err);
-             // Fallback for older browsers
-             const textArea = document.createElement('textarea');
-             textArea.value = this.formulaOutput.textContent;
-             document.body.appendChild(textArea);
-             textArea.select();
-             document.execCommand('copy');
-             document.body.removeChild(textArea);
-             
-             this.copyBtn.textContent = 'Copied!';
-             setTimeout(() => {
-                 this.copyBtn.textContent = 'Copy Desmos Formulas';
-             }, 2000);
-         }
+            this.copyBtn.textContent = 'Copied!';
+            setTimeout(() => {
+                this.copyBtn.textContent = 'Copy Desmos Formulas';
+            }, 2000);
+        } catch (err) {
+            console.error('Failed to copy: ', err);
+            // Fallback for older browsers
+            const textArea = document.createElement('textarea');
+            textArea.value = this.formulaOutput.textContent;
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            
+            this.copyBtn.textContent = 'Copied!';
+            setTimeout(() => {
+                this.copyBtn.textContent = 'Copy Desmos Formulas';
+            }, 2000);
+        }
     }
 }
 
