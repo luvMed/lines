@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mathematical Outline Generator</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📐</text></svg>">
     <link rel="stylesheet" href="styles.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 </head>
@@ -84,12 +85,21 @@
                     </div>
                 </div>
 
-                <div class="preview-section">
-                    <h3>Preview</h3>
-                    <div class="preview-container">
-                        <div id="previewElement"></div>
-                    </div>
-                </div>
+                                 <div class="preview-section">
+                     <h3>Preview</h3>
+                     <div class="preview-container">
+                         <div class="preview-tabs">
+                             <button class="tab-btn active" data-tab="animated">Animated</button>
+                             <button class="tab-btn" data-tab="black-outline">Black Outline</button>
+                         </div>
+                         <div class="tab-content">
+                             <div id="previewElement" class="tab-pane active"></div>
+                             <div id="blackOutlinePreview" class="tab-pane">
+                                 <canvas id="blackOutlineCanvas"></canvas>
+                             </div>
+                         </div>
+                     </div>
+                 </div>
             </div>
         </main>
     </div>

@@ -20,6 +20,7 @@ class MathematicalOutlineGenerator {
         this.outlinesCanvas = document.getElementById('outlinesCanvas');
         this.formulaOutput = document.getElementById('formulaOutput');
         this.previewElement = document.getElementById('previewElement');
+        this.blackOutlineCanvas = document.getElementById('blackOutlineCanvas');
         this.copyBtn = document.getElementById('copyBtn');
         this.processBtn = document.getElementById('processBtn');
         
@@ -52,6 +53,12 @@ class MathematicalOutlineGenerator {
         
         // Copy button
         this.copyBtn.addEventListener('click', this.copyToClipboard.bind(this));
+        
+        // Tab switching
+        const tabBtns = document.querySelectorAll('.tab-btn');
+        tabBtns.forEach(btn => {
+            btn.addEventListener('click', this.switchTab.bind(this));
+        });
     }
 
     handleDragOver(e) {
@@ -137,29 +144,45 @@ class MathematicalOutlineGenerator {
     }
 
     async detectEdges() {
-        const canvas = this.edgesCanvas;
-        const ctx = canvas.getContext('2d');
-        
-        // Set canvas size same as original
-        canvas.width = this.originalCanvas.width;
-        canvas.height = this.originalCanvas.height;
-        
-        // Draw original image
-        ctx.drawImage(this.originalImage, 0, 0, canvas.width, canvas.height);
-        
-        // Get image data
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const data = imageData.data;
-        
-        // Convert to grayscale and apply edge detection
-        const grayscale = this.convertToGrayscale(data, canvas.width, canvas.height);
-        const edges = this.applyCannyEdgeDetection(grayscale, canvas.width, canvas.height);
-        
-        // Display edges
-        const edgeImageData = new ImageData(edges, canvas.width, canvas.height);
-        ctx.putImageData(edgeImageData, 0, 0);
-        
-        this.edgeData = edges;
+        try {
+            const canvas = this.edgesCanvas;
+            const ctx = canvas.getContext('2d');
+            
+            // Set canvas size same as original
+            canvas.width = this.originalCanvas.width;
+            canvas.height = this.originalCanvas.height;
+            
+            // Draw original image
+            ctx.drawImage(this.originalImage, 0, 0, canvas.width, canvas.height);
+            
+            // Get image data
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+            
+            // Convert to grayscale and apply edge detection
+            const grayscale = this.convertToGrayscale(data, canvas.width, canvas.height);
+            const edges = this.applyCannyEdgeDetection(grayscale, canvas.width, canvas.height);
+            
+            // Display edges
+            const edgeImageData = new ImageData(canvas.width, canvas.height);
+            const edgeData = edgeImageData.data;
+            
+            for (let i = 0; i < edges.length; i++) {
+                const value = edges[i];
+                const pixelIndex = i * 4;
+                edgeData[pixelIndex] = value;     // Red
+                edgeData[pixelIndex + 1] = value; // Green
+                edgeData[pixelIndex + 2] = value; // Blue
+                edgeData[pixelIndex + 3] = 255;   // Alpha
+            }
+            
+            ctx.putImageData(edgeImageData, 0, 0);
+            
+            this.edgeData = edges;
+        } catch (error) {
+            console.error('Error in detectEdges:', error);
+            throw error;
+        }
     }
 
     convertToGrayscale(data, width, height) {
@@ -609,6 +632,60 @@ class MathematicalOutlineGenerator {
 
     displayResults() {
         // Results are already displayed in the canvas elements
+        this.createBlackOutlinePreview();
+    }
+    
+    switchTab(e) {
+        const targetTab = e.target.dataset.tab;
+        
+        // Update active tab button
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.classList.remove('active');
+        });
+        e.target.classList.add('active');
+        
+        // Update active tab content
+        document.querySelectorAll('.tab-pane').forEach(pane => {
+            pane.classList.remove('active');
+        });
+        
+        if (targetTab === 'animated') {
+            document.getElementById('previewElement').classList.add('active');
+        } else if (targetTab === 'black-outline') {
+            document.getElementById('blackOutlinePreview').classList.add('active');
+        }
+    }
+    
+    createBlackOutlinePreview() {
+        const canvas = this.blackOutlineCanvas;
+        const ctx = canvas.getContext('2d');
+        
+        // Set canvas size same as original
+        canvas.width = this.originalCanvas.width;
+        canvas.height = this.originalCanvas.height;
+        
+        // Draw original image
+        ctx.drawImage(this.originalImage, 0, 0, canvas.width, canvas.height);
+        
+        // Draw black outlines on top
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        
+        for (const outline of this.outlines) {
+            switch (outline.type) {
+                case 'linear':
+                    this.drawLinearOutline(ctx, outline);
+                    break;
+                case 'quadratic':
+                    this.drawQuadraticOutline(ctx, outline);
+                    break;
+                case 'spline':
+                    this.drawSplineOutline(ctx, outline);
+                    break;
+            }
+        }
     }
 
     generateCSS() {
