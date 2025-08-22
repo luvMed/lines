@@ -1090,8 +1090,9 @@ class MathematicalOutlineGenerator {
         }
         
         const mean = count > 0 ? sum / count : 0;
-        const highThreshold = Math.max(baseThreshold, mean * 1.5);
-        const lowThreshold = Math.max(baseThreshold * 0.3, mean * 0.5);
+        // Lower thresholds to capture more edges
+        const highThreshold = Math.max(baseThreshold * 0.5, mean * 1.0);
+        const lowThreshold = Math.max(baseThreshold * 0.1, mean * 0.3);
         
         const result = new Uint8ClampedArray(width * height);
         
@@ -1116,9 +1117,9 @@ class MathematicalOutlineGenerator {
         for (let y = 0; y < height; y++) {
             for (let x = 0; x < width; x++) {
                 const idx = y * width + x;
-                if (data[idx] === 255 && !visited.has(idx)) {
-                    const component = this.findConnectedComponent(data, width, height, x, y, visited);
-                    if (component.length > 20) { // Only keep significant components
+                if ((data[idx] === 255 || data[idx] === 128) && !visited.has(idx)) {
+                    const component = this.findConnectedComponentEnhanced(data, width, height, x, y, visited);
+                    if (component.length > 10) { // Lower threshold to keep more components
                         components.push(component);
                     }
                 }
@@ -1133,10 +1134,11 @@ class MathematicalOutlineGenerator {
             }
         }
         
-        return result;
+        // Apply region growing to fill gaps
+        return this.regionGrowing(result, width, height);
     }
 
-    findConnectedComponent(data, width, height, startX, startY, visited) {
+    findConnectedComponentEnhanced(data, width, height, startX, startY, visited) {
         const component = [];
         const stack = [{x: startX, y: startY}];
         
@@ -1145,7 +1147,7 @@ class MathematicalOutlineGenerator {
             const idx = y * width + x;
             
             if (x < 0 || x >= width || y < 0 || y >= height || 
-                data[idx] !== 255 || visited.has(idx)) {
+                (data[idx] !== 255 && data[idx] !== 128) || visited.has(idx)) {
                 continue;
             }
             
@@ -1162,6 +1164,62 @@ class MathematicalOutlineGenerator {
         }
         
         return component;
+    }
+
+    regionGrowing(data, width, height) {
+        const result = new Uint8ClampedArray(data);
+        const visited = new Set();
+        
+        // Find seed points (strong edges)
+        const seeds = [];
+        for (let i = 0; i < width * height; i++) {
+            if (data[i] === 255) {
+                seeds.push(i);
+            }
+        }
+        
+        // Grow regions from seeds
+        for (const seed of seeds) {
+            if (!visited.has(seed)) {
+                this.growRegion(result, width, height, seed, visited);
+            }
+        }
+        
+        return result;
+    }
+
+    growRegion(data, width, height, startIdx, visited) {
+        const stack = [startIdx];
+        
+        while (stack.length > 0) {
+            const idx = stack.pop();
+            
+            if (visited.has(idx)) continue;
+            visited.add(idx);
+            
+            const x = idx % width;
+            const y = Math.floor(idx / width);
+            
+            // Check 8-connected neighbors
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        const nIdx = ny * width + nx;
+                        
+                        // Grow to weak edges and nearby pixels
+                        if (!visited.has(nIdx) && (data[nIdx] === 128 || data[nIdx] > 0)) {
+                            data[nIdx] = 255;
+                            stack.push(nIdx);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     generateMathematicalOutlines() {
@@ -1189,13 +1247,18 @@ class MathematicalOutlineGenerator {
         const visited = new Set();
         const contours = [];
         
-        for (let y = 0; y < height; y++) {
-            for (let x = 0; x < width; x++) {
-                const idx = y * width + x;
-                if (edgeData[idx] === 255 && !visited.has(idx)) {
-                    const contour = this.traceContour(edgeData, width, height, x, y, visited);
-                    if (contour.length > 10) { // Only keep significant contours
-                        contours.push(contour);
+        // Use multiple passes with different thresholds to capture full person outline
+        const edgeThresholds = [255, 128, 64]; // High, medium, low thresholds
+        
+        for (const threshold of edgeThresholds) {
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const idx = y * width + x;
+                    if (edgeData[idx] >= threshold && !visited.has(idx)) {
+                        const contour = this.traceContourEnhanced(edgeData, width, height, x, y, visited, threshold);
+                        if (contour.length > 20) { // Increased minimum length
+                            contours.push(contour);
+                        }
                     }
                 }
             }
@@ -1208,6 +1271,67 @@ class MathematicalOutlineGenerator {
         return this.advancedPersonDetection(personContours, edgeData, width, height);
     }
 
+    traceContourEnhanced(edgeData, width, height, startX, startY, visited, threshold) {
+        const contour = [];
+        const directions = [
+            [-1, -1], [-1, 0], [-1, 1],
+            [0, -1],           [0, 1],
+            [1, -1],  [1, 0],  [1, 1]
+        ];
+        
+        let x = startX;
+        let y = startY;
+        let consecutiveFailures = 0;
+        const maxFailures = 5;
+        
+        do {
+            contour.push({x, y});
+            visited.add(y * width + x);
+            
+            let found = false;
+            for (const [dx, dy] of directions) {
+                const nx = x + dx;
+                const ny = y + dy;
+                
+                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                    const idx = ny * width + nx;
+                    if (edgeData[idx] >= threshold && !visited.has(idx)) {
+                        x = nx;
+                        y = ny;
+                        found = true;
+                        consecutiveFailures = 0;
+                        break;
+                    }
+                }
+            }
+            
+            if (!found) {
+                consecutiveFailures++;
+                // Try with lower threshold if we can't find next point
+                if (consecutiveFailures < maxFailures) {
+                    for (const [dx, dy] of directions) {
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        
+                        if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                            const idx = ny * width + nx;
+                            if (edgeData[idx] > 0 && !visited.has(idx)) {
+                                x = nx;
+                                y = ny;
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (!found || consecutiveFailures >= maxFailures) break;
+        } while (x !== startX || y !== startY);
+        
+        return contour;
+    }
+
     advancedPersonDetection(contours, edgeData, width, height) {
         const detectedPersons = [];
         
@@ -1215,19 +1339,35 @@ class MathematicalOutlineGenerator {
             // Calculate person confidence score
             const confidence = this.calculatePersonConfidence(contour, edgeData, width, height);
             
-            if (confidence > 0.7) { // High confidence threshold
+            if (confidence > 0.5) { // Lower confidence threshold
                 detectedPersons.push(contour);
             }
         }
         
-        // If no high-confidence persons found, try with lower threshold
+        // If no high-confidence persons found, try with even lower threshold
         if (detectedPersons.length === 0) {
             for (const contour of contours) {
                 const confidence = this.calculatePersonConfidence(contour, edgeData, width, height);
-                if (confidence > 0.5) {
+                if (confidence > 0.3) { // Much lower threshold
                     detectedPersons.push(contour);
                 }
             }
+        }
+        
+        // If still no persons found, include the largest contour
+        if (detectedPersons.length === 0 && contours.length > 0) {
+            let largestContour = contours[0];
+            let maxArea = this.calculateArea(contours[0]);
+            
+            for (const contour of contours) {
+                const area = this.calculateArea(contour);
+                if (area > maxArea) {
+                    maxArea = area;
+                    largestContour = contour;
+                }
+            }
+            
+            detectedPersons.push(largestContour);
         }
         
         return detectedPersons;
@@ -1715,7 +1855,7 @@ class MathematicalOutlineGenerator {
     }
 
     isPersonLike(contour, width, height) {
-        if (contour.length < 20) return false;
+        if (contour.length < 15) return false; // Lower minimum length
         
         // Calculate bounding box
         let minX = width, maxX = 0, minY = height, maxY = 0;
@@ -1731,13 +1871,13 @@ class MathematicalOutlineGenerator {
         const aspectRatio = bboxHeight / bboxWidth;
         
         // Person-like characteristics:
-        // 1. Height should be greater than width (aspect ratio > 1.2)
+        // 1. Height should be greater than width (aspect ratio > 1.0) - more lenient
         // 2. Should be reasonably sized (not too small or too large)
         // 3. Should have some complexity (not just a simple shape)
         // 4. Should have human-like proportions
         
-        const minSize = Math.min(width, height) * 0.1; // At least 10% of image
-        const maxSize = Math.min(width, height) * 0.8; // At most 80% of image
+        const minSize = Math.min(width, height) * 0.05; // Lower minimum size (5% of image)
+        const maxSize = Math.min(width, height) * 0.9; // Higher maximum size (90% of image)
         
         const size = Math.max(bboxWidth, bboxHeight);
         const complexity = contour.length / (bboxWidth + bboxHeight);
@@ -1751,13 +1891,14 @@ class MathematicalOutlineGenerator {
         // Check for smoothness (human contours are generally smooth)
         const smoothness = this.checkSmoothness(contour);
         
-        return aspectRatio > 1.2 && 
+        // More lenient thresholds
+        return aspectRatio > 1.0 && 
                size >= minSize && 
                size <= maxSize && 
-               complexity > 0.5 &&
-               humanProportions > 0.6 &&
-               symmetry > 0.4 &&
-               smoothness > 0.3;
+               complexity > 0.3 && // Lower complexity threshold
+               humanProportions > 0.4 && // Lower proportion threshold
+               symmetry > 0.2 && // Lower symmetry threshold
+               smoothness > 0.2; // Lower smoothness threshold
     }
 
     checkHumanProportions(contour, bboxWidth, bboxHeight) {
